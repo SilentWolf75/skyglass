@@ -116,6 +116,16 @@ bool ui_time_24h(void) { return s_time24; }
 // Sunrise/sunset would be better, but the forecast feed doesn't carry them and a weather
 // glyph isn't worth a solar-position calculation.
 static bool is_night(void) {
+#if !defined(ARDUINO)
+    // The simulator feeds the screenshot regression net, which diffs pixel for pixel.
+    // On hardware this reads the wall clock and picks the moon icon outside 06:00-20:00;
+    // in CI that made the clock and forecast references depend on what time of day the
+    // job happened to run, so the same commit produced a sun in one run and a moon in the
+    // next. Two screens then failed at random, which is the fastest way to teach everyone
+    // to ignore a failing check. Pinned to daytime off-device -- the night variant is
+    // consequently not covered by the net, which is worth less than a net that cries wolf.
+    return false;
+#endif
     const time_t now = time(nullptr);
     if (now < 1000000000) return false;      // clock not set yet
     struct tm ti;
