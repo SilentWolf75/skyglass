@@ -598,8 +598,14 @@ static void interp_step(void) {
 //
 // Contacts are processed in s_acs order, which is nearest first, so when two labels
 // collide the closer aircraft keeps the better spot.
+static uint32_t s_lblUs = 0;        // last layout_labels() duration
+static uint16_t s_lblMoves = 0;     // contacts repositioned in that pass
+static uint16_t s_lblSeen = 0;      // contacts considered
+
 static void layout_labels(void) {
     if (orb() || !s_acLayer) return;
+    const uint32_t t0 = micros();
+    uint16_t moves = 0, seen = 0;
     const float gk = (float)SCREEN_W / (float)UI_DESIGN_W;
     const lv_coord_t gap    = (lv_coord_t)(12 * gk);
     const lv_coord_t pad    = (lv_coord_t)(4 * gk);
@@ -611,6 +617,7 @@ static void layout_labels(void) {
 
     for (AcDraw &ac : s_acs) {
         if (!ac.inRange || ac.lblW <= 0) continue;
+        ++seen;
         const lv_coord_t wmax = ac.lblW;
         const lv_coord_t yTop = (lv_coord_t)(ac.pos.y - 14 * gk);
         const lv_coord_t yBot = (lv_coord_t)(ac.pos.y + 26 * gk);
@@ -703,6 +710,7 @@ static void layout_labels(void) {
             ac.lblSet = true;
             area_union(inv, glyph_bbox(ac, ac.pos));
             lv_obj_invalidate_area(s_acLayer, &inv);
+            ++moves;
         }
         if (nPlaced < (int)(sizeof(placed) / sizeof(placed[0]))) {
             lv_area_t r = { bestX, (lv_coord_t)(yTop + bestDy),
@@ -710,6 +718,9 @@ static void layout_labels(void) {
             placed[nPlaced++] = r;
         }
     }
+    s_lblUs = micros() - t0;
+    s_lblMoves = moves;
+    s_lblSeen = seen;
 }
 
 static void sweep_timer_cb(lv_timer_t *t) {
@@ -1165,6 +1176,12 @@ void setRangeLabelVisible(bool v) { s_rangeLblVisible = v; if (s_rangeLbl) show(
 // pulse are on infinite timers -- without this the same build yields a different image on
 // every run (it showed up as ~18 pixels drifting in a box around the centre marker).
 // Only the simulator calls this; the sweep toggle in settings stays a separate setting.
+void labelPerf(uint32_t *us, uint16_t *moves, uint16_t *seen) {
+    if (us) *us = s_lblUs;
+    if (moves) *moves = s_lblMoves;
+    if (seen) *seen = s_lblSeen;
+}
+
 void setLabelKeepOut(int slot, int x1, int y1, int x2, int y2) {
     if (slot < 0 || slot >= radar::KEEPOUT_SLOTS) return;
     lv_area_t &k = s_keepOut[slot];

@@ -1891,15 +1891,18 @@ void setup() {
     g_web.on("/diag", []() {
         float sfps = 0, savg = 0, smax = 0; uint32_t sdraw = 0;
         radar::sweepPerf(&sfps, &sdraw, &savg, &smax);
+        uint32_t lblUs = 0; uint16_t lblMoves = 0, lblSeen = 0;
+        radar::labelPerf(&lblUs, &lblMoves, &lblSeen);
         lv_mem_monitor_t lvmem;
         lv_mem_monitor(&lvmem);      // LVGL pool headroom: exhausting it hangs the UI core
                                      // outright -- LVGL's assert handler is a bare while(1)
-        char j[560];
+        char j[640];
         snprintf(j, sizeof(j),
                  "{\"fw\":\"%s\",\"uptime_s\":%lu,\"heap\":%u,\"heap_min\":%u,"
                  "\"heap_largest\":%u,\"psram\":%u,\"aircraft\":%d,\"max_on_screen\":%d,"
                  "\"feed_cap\":%d,\"lv_free\":%u,\"lv_pct\":%u,"
-                 "\"lv_biggest\":%u,\"lv_frag\":%u,\"photo\":\"%s\","
+                 "\"lv_biggest\":%u,\"lv_frag\":%u,"
+                 "\"lbl_us\":%u,\"lbl_moves\":%u,\"lbl_seen\":%u,\"photo\":\"%s\","
                  "\"fps\":%.1f,\"draw_us\":%u,\"step_avg\":%.2f,\"step_max\":%.2f,\"frame_ms\":%u,"
                  "\"lvgl_ms\":%.1f,\"rest_ms\":%.1f}",
                  FW_VERSION, (unsigned long)(millis() / 1000),
@@ -1913,6 +1916,7 @@ void setup() {
                  // only adjusts its running total in lv_mem_alloc and lv_mem_free, never
                  // in lv_mem_realloc, so it reads about half the real figure.)
                  (unsigned)lvmem.free_biggest_size, (unsigned)lvmem.frag_pct,
+                 (unsigned)lblUs, (unsigned)lblMoves, (unsigned)lblSeen,
                  photo_note_get(), sfps, sdraw, savg, smax, (unsigned)radar::sweepFrameMs(), g_loopLvglMs, g_loopRestMs);
         g_web.send(200, "application/json", j);
     });
