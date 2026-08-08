@@ -8,6 +8,7 @@
 #include "geo.h"
 #include "coastline.h"
 #include "airports.h"
+#include "runways.h"
 #include "map_bg.h"
 #include "vessel.h"
 #include "aircraft_types.h"
@@ -49,6 +50,9 @@
 #define COAST_COLOR lv_color_hex(0x4E86C6)
 // airport markers — a neutral muted grey-blue so they sit quietly under the traffic.
 #define AIRPORT_COLOR lv_color_hex(0x8A93A6)
+// Dimmer than the airport marker on purpose: the strips are ground detail you
+// glance at, not something competing with the dot and its ident.
+#define RUNWAY_COLOR  lv_color_hex(0x6E7789)
 // ...but the ident label is meant to be READ. Pale ice-blue, near-opaque: bright enough
 // on true black to scan at a glance, and cool enough that it never reads as an aircraft
 // callsign (white) or as scope chrome (green/amber).
@@ -398,7 +402,10 @@ static void grid_draw_cb(lv_event_t *e) {
         td.border_width = 1;
         td.border_opa = 160;
         coastline_draw(d, COAST_COLOR, 170, 2);    // landmass outline under the triangle
-        if (s_airportsEnabled) airports_draw(d, AIRPORT_COLOR, 175, AIRPORT_LABEL_COLOR, AIRPORT_LABEL_OPA);
+        if (s_airportsEnabled) {
+            runways_draw(d, RUNWAY_COLOR, 150);
+            airports_draw(d, AIRPORT_COLOR, 175, AIRPORT_LABEL_COLOR, AIRPORT_LABEL_OPA);
+        }
             lv_draw_polygon(d, &td, tri, 3);
         return;
     }
@@ -406,7 +413,10 @@ static void grid_draw_cb(lv_event_t *e) {
     // coastline first, so the rings/crosshair sit cleanly on top of it.
     // Steel blue + 2 px so it reads as a map outline, distinct from the green altitude trails.
     coastline_draw(d, COAST_COLOR, 165, 2);
-    if (s_airportsEnabled) airports_draw(d, AIRPORT_COLOR, 175, AIRPORT_LABEL_COLOR, AIRPORT_LABEL_OPA);
+    if (s_airportsEnabled) {
+            runways_draw(d, RUNWAY_COLOR, 150);
+            airports_draw(d, AIRPORT_COLOR, 175, AIRPORT_LABEL_COLOR, AIRPORT_LABEL_OPA);
+        }
 
     // phosphor: concentric rings + crosshair
     lv_draw_arc_dsc_t ad;
@@ -1357,6 +1367,7 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
         s_coLat = s.homeLat; s_coLon = s.homeLon; s_coRange = s.rangeKm;
         coastline_project(s.homeLat, s.homeLon, s.rangeKm, s_cx, s_cy, R);
         airports_project(s.homeLat, s.homeLon, s.rangeKm, s_cx, s_cy, R);
+    runways_project(s.homeLat, s.homeLon, s.rangeKm, s_cx, s_cy, R);
         if (s_gridLayer) lv_obj_invalidate(s_gridLayer);
         if (!firstFix) {
             // Scope scale/center changed: old trails were plotted at the previous
