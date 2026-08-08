@@ -20,6 +20,7 @@
 #include "wav_upload.h"
 #include "updater.h"
 #include <LittleFS.h>
+#include "sd_store.h"
 #include "weather.h"
 #include "weather_client.h"
 #include "wx_radar.h"
@@ -1708,6 +1709,7 @@ void setup() {
     // sound exists, and an uploaded one only becomes visible once the filesystem is up.
     if (!LittleFS.begin(true)) Serial.println("[fs] LittleFS mount failed (uploads unavailable)");
     else audio_load_sample();   // restore a previously uploaded alert sound
+    sd_begin();     // optional; nothing depends on it yet, so a missing card is fine
 
     loadSettings();
     updater_begin();       // restore the auto-check / auto-install preferences
@@ -1896,13 +1898,14 @@ void setup() {
         lv_mem_monitor_t lvmem;
         lv_mem_monitor(&lvmem);      // LVGL pool headroom: exhausting it hangs the UI core
                                      // outright -- LVGL's assert handler is a bare while(1)
-        char j[640];
+        char j[720];
         snprintf(j, sizeof(j),
                  "{\"fw\":\"%s\",\"uptime_s\":%lu,\"heap\":%u,\"heap_min\":%u,"
                  "\"heap_largest\":%u,\"psram\":%u,\"aircraft\":%d,\"max_on_screen\":%d,"
                  "\"feed_cap\":%d,\"lv_free\":%u,\"lv_pct\":%u,"
                  "\"lv_biggest\":%u,\"lv_frag\":%u,"
-                 "\"lbl_us\":%u,\"lbl_moves\":%u,\"lbl_seen\":%u,\"photo\":\"%s\","
+                 "\"lbl_us\":%u,\"lbl_moves\":%u,\"lbl_seen\":%u,"
+                 "\"sd\":\"%s\",\"photo\":\"%s\","
                  "\"fps\":%.1f,\"draw_us\":%u,\"step_avg\":%.2f,\"step_max\":%.2f,\"frame_ms\":%u,"
                  "\"lvgl_ms\":%.1f,\"rest_ms\":%.1f}",
                  FW_VERSION, (unsigned long)(millis() / 1000),
@@ -1917,6 +1920,7 @@ void setup() {
                  // in lv_mem_realloc, so it reads about half the real figure.)
                  (unsigned)lvmem.free_biggest_size, (unsigned)lvmem.frag_pct,
                  (unsigned)lblUs, (unsigned)lblMoves, (unsigned)lblSeen,
+                 sd_status(),
                  photo_note_get(), sfps, sdraw, savg, smax, (unsigned)radar::sweepFrameMs(), g_loopLvglMs, g_loopRestMs);
         g_web.send(200, "application/json", j);
     });

@@ -106,6 +106,24 @@
 #define GPS_UART_NUM        1              // UART0 is the debug console
 #define GPS_BAUD            9600           // GAM-1818B-GKBD default, 8N1
 
+// ---------- microSD (SDMMC slot 0) ----------
+// Not a board choice: the P4 multiplexes SDMMC_HOST_SLOT_0 onto GPIO39-48 through the
+// IO MUX, so these signals cannot be routed anywhere else (ESP32-P4 datasheet, "SD/MMC
+// Host Controller > Pin Assignment"). Free on this board -- touch is 7/8, the codec
+// 9-13, the C6 link 14-19, GPS 20/21, the debug UART 37/38 and the audio PA 53.
+// [VENDOR] ESP32-P4-WIFI6-Touch-LCD-XC schematic, MicroSD Card block (SD1).
+#define BOARD_HAS_SD        1
+#define PIN_SD_CLK          43
+#define PIN_SD_CMD          44
+#define PIN_SD_D0           39
+#define PIN_SD_D1           40
+#define PIN_SD_D2           41
+#define PIN_SD_D3           42
+// Card rail via an AO3401 P-FET, gate pulled up so the card is off at reset. Driving it
+// low powers the card. The FET is a board choice rather than a chip constraint, so
+// sd_begin() tries both polarities before giving up.
+#define PIN_SD_PWR          45
+
 // ---------- Peripherals present ----------
 // No IMU, RTC or PMIC on this board: face-down sleep, battery reporting and the
 // pre-WiFi clock all need to degrade gracefully rather than be assumed.
