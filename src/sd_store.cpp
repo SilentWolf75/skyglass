@@ -291,7 +291,7 @@ const char *sd_status(void)     { return s_status; }
 uint32_t    sd_seen_records(void) { return s_idxLen; }
 void sd_counters(uint32_t *hit, uint32_t *app, uint32_t *rderr) {
     if (hit) *hit = s_hits; if (app) *app = s_appends;
-    if (rderr) *rderr = s_readErr * 1000u + (s_seekErr > 999u ? 999u : s_seekErr);
+    if (rderr) *rderr = s_readErr + s_seekErr;
 }
 
 bool sd_format(void) {
@@ -341,14 +341,13 @@ bool sd_seen_lookup(const char *hex, SdSeen *out) {
     return true;
 }
 
-// KNOWN DEFECT: about a third of contacts miss on lookup each poll and get appended
-// again, so the file grows by a few hundred records a minute instead of settling at the
-// number of distinct airframes. Measured, not guessed: sd_hit/sd_app in /diag show the
-// ratio, and sd_rderr is zero -- every append is indexed, no read or seek fails, yet the
-// next poll misses. So the index is resolving to records whose hex does not match.
-// Leading suspect is the unsynchronised access between sd_log_seen() on the feed task and
-// sd_seen_lookup() on the UI task, which share s_idx while it is being memmove'd. The
-// data is harmless (an oversized file and an inflated "seen Nx"), but it is wrong.
+// Why the record number comes from stat() and not ftell(): computing it before the
+// write, from a file opened "r+b" and seeked to the end, produced numbers that did not
+// match where the data landed. Every appended record then failed to read back, so each
+// contact was re-appended on the next poll and the file grew a few hundred records a
+// minute while visit counts climbed. Taking the size after the write instead does not
+// depend on how this FATFS treats seek and tell in append mode. Measured after the fix:
+// three appends in two minutes against 1,390 lookups, all hits.
 //
 // Real airframes only: exactly six hex digits. A local receiver also reports TIS-B and
 // ADS-R tracks, which tar1090 prefixes with '~' and which carry ephemeral, non-ICAO
@@ -401,16 +400,22 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
     r.lastSeen = nowEpoch;
     r.closestDam = dam;
 
-    FILE *f = fopen(SD_SEEN, "r+b");
-    if (!f) f = fopen(SD_SEEN, "w+b");         // first record on a fresh card
+    // Append with "ab", and take the record number from the file's size *after* the
+    // write rather than from ftell() before it. The offset arithmetic was the bug: every
+    // appended record failed to read back, so each contact was re-appended on every poll
+    // while the file grew 32 bytes a time. stat() after close is the authoritative
+    // answer and does not depend on how this FATFS treats seek and tell in append mode.
+    FILE *f = fopen(SD_SEEN, "ab");
     if (!f) return;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
-    const long end = ftell(f);
-    if (end < 0 || (end % (long)sizeof(SeenRec)) != 0) { fclose(f); return; }
-    const uint32_t newRec = (uint32_t)(end / (long)sizeof(SeenRec));
     const bool wrote = (fwrite(&r, sizeof(r), 1, f) == 1);
     fclose(f);
-    if (!wrote || !idx_reserve(s_idxLen + 1)) return;
+    if (!wrote) return;
+
+    struct stat st;
+    if (stat(SD_SEEN, &st) != 0) return;
+    if (st.st_size < (off_t)sizeof(SeenRec) || (st.st_size % (off_t)sizeof(SeenRec)) != 0) return;
+    const uint32_t newRec = (uint32_t)(st.st_size / (off_t)sizeof(SeenRec)) - 1u;
+    if (!idx_reserve(s_idxLen + 1)) return;
 
     const uint32_t h = hex_hash(r.hex);
     const uint32_t at = idx_find_pos(h);

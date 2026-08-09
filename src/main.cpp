@@ -1957,7 +1957,7 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
         lv_mem_monitor_t lvmem;
         lv_mem_monitor(&lvmem);      // LVGL pool headroom: exhausting it hangs the UI core
                                      // outright -- LVGL's assert handler is a bare while(1)
-        char j[800];
+        char j[880];
         snprintf(j, sizeof(j),
                  "{\"fw\":\"%s\",\"uptime_s\":%lu,\"heap\":%u,\"heap_min\":%u,"
                  "\"heap_largest\":%u,\"psram\":%u,\"aircraft\":%d,\"max_on_screen\":%d,"
