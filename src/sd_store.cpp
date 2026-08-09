@@ -50,9 +50,20 @@ static_assert(sizeof(SeenRec) == 32, "SeenRec must stay 32 bytes: offsets depend
 // Index: hash of the hex -> record number, sorted by hash, binary searched. Lives in
 // PSRAM (8 bytes an airframe, so 20k aircraft is 160 KB) because the P4 has only ~240 KB
 // of internal heap and an std::map of strings would eat a serious fraction of it.
-struct IdxEnt { uint32_t h; uint32_t rec; };
+// Carries the address itself, not just a hash. Confirming a match used to mean reading
+// the record back off the card on every single lookup -- thousands a minute -- and a
+// freshly appended record is not yet visible to a new fopen(), so its own aircraft looked
+// unknown and got appended again. Holding the hex in RAM makes the check exact, immune to
+// write visibility, and free. 16 bytes an airframe: 320 KB of PSRAM at 20k, which the P4
+// has in abundance and its internal heap does not.
+struct IdxEnt { uint32_t h; uint32_t rec; char hex[8]; };
 static IdxEnt  *s_idx = nullptr;
 static uint32_t s_idxLen = 0, s_idxCap = 0;
+// Records in the file, tracked in RAM. Neither ftell() before the write nor stat()
+// after it gave a usable record number on this FATFS -- the size lags the write, so
+// every index entry pointed one record short and matched the previous aircraft. We are
+// the only writer, so counting is exact and owes the filesystem nothing.
+static uint32_t s_fileRecs = 0;
 
 static uint32_t hex_hash(const char *s) {          // FNV-1a, plenty for 6 hex chars
     uint32_t h = 2166136261u;
@@ -97,9 +108,8 @@ static bool rec_read(uint32_t rec, SeenRec *out) {
 static uint32_t rec_lookup(const char *hex) {
     if (!s_idx) return UINT32_MAX;
     const uint32_t h = hex_hash(hex);
-    SeenRec r;
     for (uint32_t i = idx_find_pos(h); i < s_idxLen && s_idx[i].h == h; ++i)
-        if (rec_read(s_idx[i].rec, &r) && strncmp(r.hex, hex, sizeof(r.hex)) == 0)
+        if (strncmp(s_idx[i].hex, hex, sizeof(s_idx[i].hex)) == 0)
             return s_idx[i].rec;
     return UINT32_MAX;
 }
@@ -120,10 +130,12 @@ static void idx_build(void) {
             if (!buf[i].hex[0]) continue;
             s_idx[s_idxLen].h = hex_hash(buf[i].hex);
             s_idx[s_idxLen].rec = rec;
+            memcpy(s_idx[s_idxLen].hex, buf[i].hex, sizeof(s_idx[s_idxLen].hex));
             ++s_idxLen;
         }
     }
     fclose(f);
+    s_fileRecs = rec;            // total records in the file, holes included
     // insertion-sort-free: sort once by hash
     for (uint32_t i = 1; i < s_idxLen; ++i) {
         const IdxEnt k = s_idx[i];
@@ -325,6 +337,7 @@ bool sd_seen_erase(void) {
     if (!s_mounted) return false;
     remove(SD_SEEN);
     s_idxLen = 0;
+    s_fileRecs = 0;
     return true;
 }
 
@@ -341,14 +354,6 @@ bool sd_seen_lookup(const char *hex, SdSeen *out) {
     return true;
 }
 
-// Why the record number comes from stat() and not ftell(): computing it before the
-// write, from a file opened "r+b" and seeked to the end, produced numbers that did not
-// match where the data landed. Every appended record then failed to read back, so each
-// contact was re-appended on the next poll and the file grew a few hundred records a
-// minute while visit counts climbed. Taking the size after the write instead does not
-// depend on how this FATFS treats seek and tell in append mode. Measured after the fix:
-// three appends in two minutes against 1,390 lookups, all hits.
-//
 // Real airframes only: exactly six hex digits. A local receiver also reports TIS-B and
 // ADS-R tracks, which tar1090 prefixes with '~' and which carry ephemeral, non-ICAO
 // addresses that change constantly. Logging those grew the file by thousands of "new
@@ -405,22 +410,20 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
     // appended record failed to read back, so each contact was re-appended on every poll
     // while the file grew 32 bytes a time. stat() after close is the authoritative
     // answer and does not depend on how this FATFS treats seek and tell in append mode.
+    const uint32_t newRec = s_fileRecs;      // where this one is about to land
     FILE *f = fopen(SD_SEEN, "ab");
     if (!f) return;
     const bool wrote = (fwrite(&r, sizeof(r), 1, f) == 1);
     fclose(f);
     if (!wrote) return;
-
-    struct stat st;
-    if (stat(SD_SEEN, &st) != 0) return;
-    if (st.st_size < (off_t)sizeof(SeenRec) || (st.st_size % (off_t)sizeof(SeenRec)) != 0) return;
-    const uint32_t newRec = (uint32_t)(st.st_size / (off_t)sizeof(SeenRec)) - 1u;
+    ++s_fileRecs;
     if (!idx_reserve(s_idxLen + 1)) return;
 
     const uint32_t h = hex_hash(r.hex);
     const uint32_t at = idx_find_pos(h);
     memmove(&s_idx[at + 1], &s_idx[at], (size_t)(s_idxLen - at) * sizeof(IdxEnt));
     s_idx[at].h = h; s_idx[at].rec = newRec;
+    memcpy(s_idx[at].hex, r.hex, sizeof(s_idx[at].hex));
     ++s_idxLen;
 }
 

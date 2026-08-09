@@ -144,12 +144,17 @@ Three things this cost, all of them board-specific:
   tracks with ephemeral non-ICAO ids, which would otherwise arrive as thousands of new
   "airframes" a minute.
 
-One more trap, worth writing down because it cost an evening: the record number must
-come from `stat()` *after* the write, not from `ftell()` before it. Computed the second
-way it did not match where the data landed, so every record failed to read back and each
-contact was re-appended on the next poll - a few hundred spurious records a minute and
-visit counts that climbed on their own. `sd_hit` and `sd_app` in `/diag` are the check:
-at steady state appends should be near zero and hits should dominate.
+One trap, worth writing down because it cost most of a day. The index holds each ICAO
+address in RAM and confirms matches there. It used to hold only a hash and read the
+record back off the card to confirm - and a freshly appended record is not visible to a
+new `fopen()`, so an aircraft's own record looked unknown and it was appended again on
+every poll. The file grew hundreds of records a minute and visit counts climbed on their
+own. Two attempts to fix it by computing the record number differently (`ftell` before
+the write, then `stat` after) both failed, because the number was never the problem.
+
+`sd_hit` and `sd_app` in `/diag` are the check: at steady state appends should be a
+trickle and hits should dominate by orders of magnitude. Measured after the fix: 50
+airframes on file, ~4 appends a minute in busy traffic, against 4,283 hits.
 
 ## Airport markers
 The embedded list (`tools/gen_airports.py` -> `src/airports_data.h`) keeps every airport

@@ -2041,10 +2041,17 @@ void loop() {
     if (g_useGps) gps_poll();       // pull NMEA from the LC76G (only when GPS auto-location is on)
 
     // scheduled reboot after a fresh WiFi config (see setSaveConfigCallback)
-    // No automatic SD probe. It went from "boot loop with a card in" to "freezes the
-    // board with the slot empty", so it does not run on its own at all: the card is
-    // brought up only when someone asks for it at /sdretry. Nothing in the firmware
-    // depends on the card, so costing the board its boot to look for one is a bad trade.
+#if BOARD_HAS_SD
+    // Probe the card once, twenty seconds in. Three guard rails, each earned: it is not
+    // in setup(), so a fault cannot stop the board before the display, WiFi and OTA
+    // exist; the mount never touches the shared SDMMC host beyond slot 0, which is what
+    // was killing the C6 link; and sd_begin() raises an NVS flag before probing that only
+    // clears afterwards, so a probe that does not return leaves the next boot skipping
+    // the card entirely. Turned back on because the mount has since run repeatedly
+    // without disturbing the radio, and a flight log that never starts is no log at all.
+    static bool sdProbed = false;
+    if (!sdProbed && millis() > 20000UL) { sdProbed = true; sd_begin(); }
+#endif
     if (g_rebootAtMs && (int32_t)(millis() - g_rebootAtMs) >= 0) { delay(50); ESP.restart(); }
 
     // OTA: set up once WiFi is up, then service it every loop (flash over the air)
