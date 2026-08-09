@@ -282,6 +282,21 @@ static void adsb_task(void*) {
                     const uint32_t receivedMs = millis();
                     lastFeedOk = receivedMs;
                     healStage = 0;                    // recovered: re-arm the whole ladder
+
+                    // Flight log. Runs here rather than in the UI because it writes to
+                    // the card, and a slow write must never land in the LVGL loop. Costs
+                    // nothing when there is no card: sd_log_seen() returns immediately.
+                    if (sd_mounted()) {
+                        const time_t nowT = time(nullptr);
+                        const uint32_t ep = (nowT > 1000000000) ? (uint32_t)nowT : 0;
+                        for (const Aircraft &a : fresh) {
+                            if (a.hex.isEmpty()) continue;
+                            const float dKm = geo::haversineKmf((float)g_settings.homeLat,
+                                                                (float)g_settings.homeLon,
+                                                                (float)a.lat, (float)a.lon);
+                            sd_log_seen(a.hex.c_str(), a.flight.c_str(), dKm, ep);
+                        }
+                    }
                     healActionMs = 0;
                     g_lastFeedOkMs = receivedMs;      // HUD: mark data as fresh
 
@@ -918,6 +933,23 @@ static void handleRoot() {
         "works as-is (they are usually reachable as <b>adsbexchange.local</b> or "
         "<b>piaware.local</b>). Your own antenna, no internet required. Leave blank if "
         "you do not run one.</div></div>"
+#if BOARD_HAS_SD
+        // Status is filled in by JS from /diag rather than printf'd into this page: the
+        // page is one large format string and threading two more args through it is a
+        // needless chance to desync the placeholders from the values.
+        "<div class=card><div class=t>Flight log (microSD)</div>"
+        "<div id=sdi style='font-size:13px;margin-bottom:8px'>Card: checking...</div>"
+        "<button onclick=\"if(confirm('Erase the flight log? The sighting history is lost. "
+        "Nothing else on the card is touched.'))fetch('/sdlog?erase=1').then(()=>location.reload())\">"
+        "Erase flight log</button> "
+        "<button onclick=\"if(confirm('FORMAT THE CARD? This erases EVERYTHING on it, not just "
+        "the flight log, and cannot be undone.'))fetch('/sdfmt?go=1').then(()=>location.reload())\">"
+        "Format card</button>"
+        "<div style='font-size:12px;opacity:.6;margin-top:6px'>Each airframe is recorded once, "
+        "with a count of how often it has been over; that is what the detail card shows. "
+        "Formatting is only for a card this device cannot read &mdash; it wants <b>FAT32</b>."
+        "</div></div>"
+#endif
         "<div class=card><div class=t>Quiet hours</div>"
         "<label>Mode</label><select onchange='qm(this.value)'>%s</select>"
         "<label>From</label><input type=time value='%02d:%02d' onchange='qs(this.value)'>"
@@ -1018,6 +1050,13 @@ static void handleRoot() {
         "function lf(v){fetch('/adsblocal?h='+encodeURIComponent(v))}"
         "function ls(v){fetch('/adsblocal?m='+v)}"
         "function mb(c){fetch('/map?v='+(c?1:0)+'&save=1')}"
+#if BOARD_HAS_SD
+        // Fill the flight-log card's status line from /diag rather than printf-ing it
+        // into the page: this page is one big format string and the fewer placeholders
+        // it carries, the fewer ways it can desync from its argument list.
+        "fetch('/diag').then(r=>r.json()).then(d=>{var e=document.getElementById('sdi');"
+        "if(e)e.textContent='Card: '+d.sd+'  -  '+d.sd_recs+' airframes on file'}).catch(()=>{});"
+#endif
         "function ms(v){fetch('/map?style='+v+'&save=1')}"
         "function mop(v,s){document.getElementById('mop-val').innerText=v+'%%';fetch('/mapopa?v='+v+(s?'&save=1':''))}"
         "function qm(v){fetch('/quiet?mode='+v+'&save=1')}"
@@ -1877,6 +1916,16 @@ void setup() {
     g_web.on("/mapopa", handleMapOpa);
     g_web.on("/ais", handleAis);
     g_web.on("/adsblocal", handleAdsbLocal);
+#if BOARD_HAS_SD
+    g_web.on("/sdlog", []() {                 // erase the sighting history only
+        const bool ok = g_web.hasArg("erase") && sd_seen_erase();
+        g_web.send(200, "text/plain", ok ? "erased" : "no card");
+    });
+    g_web.on("/sdfmt", []() {                 // reformat the card; destroys everything
+        const bool ok = g_web.hasArg("go") && sd_format();
+        g_web.send(200, "text/plain", ok ? "formatted" : "failed");
+    });
+#endif
     g_web.on("/sound", HTTP_POST,
         []() {
             if (g_soundUploadOk) {
@@ -1905,7 +1954,7 @@ void setup() {
                  "\"feed_cap\":%d,\"lv_free\":%u,\"lv_pct\":%u,"
                  "\"lv_biggest\":%u,\"lv_frag\":%u,"
                  "\"lbl_us\":%u,\"lbl_moves\":%u,\"lbl_seen\":%u,"
-                 "\"sd\":\"%s\",\"photo\":\"%s\","
+                 "\"sd\":\"%s\",\"sd_recs\":%u,\"photo\":\"%s\","
                  "\"fps\":%.1f,\"draw_us\":%u,\"step_avg\":%.2f,\"step_max\":%.2f,\"frame_ms\":%u,"
                  "\"lvgl_ms\":%.1f,\"rest_ms\":%.1f}",
                  FW_VERSION, (unsigned long)(millis() / 1000),
@@ -1920,7 +1969,7 @@ void setup() {
                  // in lv_mem_realloc, so it reads about half the real figure.)
                  (unsigned)lvmem.free_biggest_size, (unsigned)lvmem.frag_pct,
                  (unsigned)lblUs, (unsigned)lblMoves, (unsigned)lblSeen,
-                 sd_status(),
+                 sd_status(), (unsigned)sd_seen_records(),
                  photo_note_get(), sfps, sdraw, savg, smax, (unsigned)radar::sweepFrameMs(), g_loopLvglMs, g_loopRestMs);
         g_web.send(200, "application/json", j);
     });

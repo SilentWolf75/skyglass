@@ -16,6 +16,7 @@
 #include "geo.h"
 #include "config.h"
 #include <lvgl.h>
+#include "sd_store.h"
 #if defined(ARDUINO)
 #include <WiFi.h>
 #else
@@ -359,13 +360,30 @@ static void refresh_card(void) {
         snprintf(s_lastRouteReq, sizeof(s_lastRouteReq), "%s", in.call);
         route_request(in.call);
     }
+    // How often this airframe has been over before, from the card. Shares the route
+    // line rather than taking one of its own: the card is already dense, and on a board
+    // with no SD there is nothing to say, so a dedicated row would sit empty forever.
+    char hist[40];
+    hist[0] = 0;
+    {
+        SdSeen sn;
+        if (in.hex[0] && sd_seen_lookup(in.hex, &sn) && sn.count > 1) {
+            if (sn.closestDam)
+                snprintf(hist, sizeof(hist), "  |  seen %ux, closest %.1f nm",
+                         (unsigned)sn.count, (double)sn.closestDam / 100.0 * 0.539957);
+            else
+                snprintf(hist, sizeof(hist), "  |  seen %ux", (unsigned)sn.count);
+        }
+    }
     char rfrom[40], rto[40];
     if (!in.call[0]) {
-        lv_label_set_text(s_cardRoute, "Route -");                 // no callsign -> nothing to look up
+        char rt[140];
+        snprintf(rt, sizeof(rt), "Route -%s", hist);               // no callsign -> nothing to look up
+        lv_label_set_text(s_cardRoute, rt);
     } else if (route_get(in.call, rfrom, sizeof(rfrom), rto, sizeof(rto))) {
-        char rt[96];
-        if (rfrom[0] || rto[0]) snprintf(rt, sizeof(rt), "%s -> %s", rfrom[0] ? rfrom : "?", rto[0] ? rto : "?");
-        else                    snprintf(rt, sizeof(rt), "Route unavailable");
+        char rt[140];
+        if (rfrom[0] || rto[0]) snprintf(rt, sizeof(rt), "%s -> %s%s", rfrom[0] ? rfrom : "?", rto[0] ? rto : "?", hist);
+        else                    snprintf(rt, sizeof(rt), "Route unavailable%s", hist);
         fold_ascii(rt);
         lv_label_set_text(s_cardRoute, rt);
     } else {
