@@ -1974,7 +1974,7 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
                  "\"feed_cap\":%d,\"lv_free\":%u,\"lv_pct\":%u,"
                  "\"lv_biggest\":%u,\"lv_frag\":%u,"
                  "\"lbl_us\":%u,\"lbl_moves\":%u,\"lbl_seen\":%u,"
-                 "\"sd\":\"%s\",\"sd_recs\":%u,\"sd_hit\":%u,\"sd_app\":%u,\"sd_rderr\":%u,\"photo\":\"%s\","
+                 "\"sd\":\"%s\",\"sd_recs\":%u,\"sd_hit\":%u,\"sd_app\":%u,\"sd_rderr\":%u,\"sd_photos\":%u,\"photo\":\"%s\","
                  "\"fps\":%.1f,\"draw_us\":%u,\"step_avg\":%.2f,\"step_max\":%.2f,\"frame_ms\":%u,"
                  "\"lvgl_ms\":%.1f,\"rest_ms\":%.1f}",
                  FW_VERSION, (unsigned long)(millis() / 1000),
@@ -1990,7 +1990,7 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
                  (unsigned)lvmem.free_biggest_size, (unsigned)lvmem.frag_pct,
                  (unsigned)lblUs, (unsigned)lblMoves, (unsigned)lblSeen,
                  sd_status(), (unsigned)sd_seen_records(),
-                 (unsigned)sdHit, (unsigned)sdApp, (unsigned)sdRdE,
+                 (unsigned)sdHit, (unsigned)sdApp, (unsigned)sdRdE, (unsigned)sd_photo_count(),
                  photo_note_get(), sfps, sdraw, savg, smax, (unsigned)radar::sweepFrameMs(), g_loopLvglMs, g_loopRestMs);
         g_web.send(200, "application/json", j);
     });

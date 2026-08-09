@@ -12,6 +12,7 @@
 #include <ArduinoJson.h>
 #include <TJpg_Decoder.h>
 #include <esp_heap_caps.h>
+#include "sd_store.h"
 
 #define PS_UA "SkyGlass/1.0 (+https://github.com/SilentWolf75/skyglass)"
 
@@ -101,6 +102,9 @@ struct PsramAlloc : ArduinoJson::Allocator {
 };
 static PsramAlloc s_jsonPsram;
 
+static bool decode_and_commit(const char *hex, uint8_t *img, size_t ilen,
+                              const char *credit, bool fromNetwork);
+
 bool photo_fetch(const char *hex) {
     if (!hex || !hex[0] || WiFi.status() != WL_CONNECTED) { photo_fail(hex, true); return false; }
 
@@ -113,6 +117,17 @@ bool photo_fetch(const char *hex) {
         Serial.println("[photo] low memory, skipping");
         photo_fail(hex, true);
         return false;
+    }
+
+    // 0) the card, if we have seen this airframe before. Skips both requests, so a
+    //    known aircraft shows its photo immediately and works with no internet at all.
+    {
+        unsigned char *cached = nullptr; size_t clen = 0; char ccredit[64] = "";
+        if (sd_photo_load(hex, &cached, &clen, ccredit, sizeof(ccredit)) && cached) {
+            if (decode_and_commit(hex, cached, clen, ccredit, false)) return true;
+            // A cached file that will not decode is a corrupt one; drop it and fetch.
+            sd_photo_forget(hex);
+        }
     }
 
     // 1) planespotters lookup (JSON)
@@ -152,6 +167,17 @@ bool photo_fetch(const char *hex) {
     uint8_t *img = nullptr; size_t ilen = 0;
     if (!http_get(proxUrl, &img, &ilen, 65536)) { photo_note("weserv proxy download failed"); Serial.printf("[photo] %s: image download failed\n", hex); photo_fail(hex, true); return false; }
 
+    // Save before decoding: this is the only point the JPEG exists in one piece, and
+    // next time it spares both network requests and the wait.
+    sd_photo_save(hex, img, ilen, credit);
+
+    return decode_and_commit(hex, img, ilen, credit, true);
+}
+
+// Shared by the cached and the freshly downloaded path: the bytes are the same JPEG
+// either way, only their origin differs. Takes ownership of img and frees it.
+static bool decode_and_commit(const char *hex, uint8_t *img, size_t ilen,
+                              const char *credit, bool fromNetwork) {
     // 3) decode into the shared PSRAM buffer, scaled to fit
     int maxW = 0, maxH = 0;
     lv_color_t *dst = photo_buffer(&maxW, &maxH);
@@ -175,7 +201,7 @@ bool photo_fetch(const char *hex) {
     heap_caps_free(img);
 
     if (jr != JDR_OK) { photo_note("jpeg decode failed"); photo_fail(hex, true); return false; }
-    photo_note("ok");
+    photo_note(fromNetwork ? "ok" : "ok (cached)");
     photo_commit(s_dstW, s_dstH, hex, credit);
     Serial.printf("[photo] %s: %dx%d (scale 1/%d) by %s\n", hex, s_dstW, s_dstH, scale, credit);
     return true;

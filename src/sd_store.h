@@ -9,6 +9,7 @@
 // Mounted through esp_vfs_fat_sdmmc_mount rather than Arduino's SD_MMC because that keeps
 // the sdmmc_card_t handle, which is what makes an on-device format possible at all.
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 // ---- card ------------------------------------------------------------------------
@@ -43,6 +44,22 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
 
 // Read-only lookup for the detail card. False if there is no card or no record.
 bool sd_seen_lookup(const char *hex, SdSeen *out);
+
+// ---- photo cache -------------------------------------------------------------------
+// Aircraft photos are fetched from the network and held in one PSRAM buffer, so they are
+// re-downloaded on every reboot and every time you tap a different contact. Cached on the
+// card they come back instantly and without the network -- which matters most on the P4,
+// whose radio link is the least reliable part of the system.
+//
+// Stored as the JPEG that arrived, not the decoded image: it is a third the size, it is
+// the form we already have in hand, and the files are readable on a PC.
+bool sd_photo_save(const char *hex, const void *jpg, size_t len, const char *credit);
+
+// Returns a PSRAM buffer the caller frees with heap_caps_free(), or false when not cached.
+bool sd_photo_load(const char *hex, unsigned char **jpg, size_t *len,
+                   char *credit, size_t creditLen);
+void     sd_photo_forget(const char *hex);   // drop a cached photo that will not decode
+uint32_t sd_photo_count(void);
 
 uint32_t sd_seen_records(void);
 void     sd_counters(uint32_t *hit, uint32_t *app, uint32_t *rderr);   // lookup diagnosis   // how many airframes are on file

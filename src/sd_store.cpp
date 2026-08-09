@@ -18,10 +18,24 @@
 #include <ff.h>
 #include <sys/stat.h>
 #include <Preferences.h>
+#include <dirent.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #define SD_MOUNT   "/sdcard"
 #define SD_DIR     SD_MOUNT "/skyglass"
 #define SD_SEEN    SD_DIR "/seen.dat"
+// Photos live beside the log rather than in a photos/ subdirectory. The subdirectory
+// looked fine -- mkdir returned, fopen inside it succeeded, fwrite wrote every byte --
+// but stat() could not then see the file and opendir() listed nothing, so the cache
+// could never find what it had just written. "p_" plus a six-digit hex is exactly eight
+// characters, so these stay inside 8.3 and need no long-filename support.
+#define SD_PHOTOS  SD_DIR
+
+// A cap rather than a size limit: FAT directory scans get slower the more entries there
+// are, and the eviction below has to walk the directory. 1000 photos at ~30 KB is about
+// 30 MB, which is nothing on the cards these boards take, and keeps the scan quick.
+#define SD_PHOTO_MAX 1000
 
 static sdmmc_card_t *s_card = nullptr;
 static bool     s_mounted = false;
@@ -65,6 +79,20 @@ static uint32_t s_idxLen = 0, s_idxCap = 0;
 // every index entry pointed one record short and matched the previous aircraft. We are
 // the only writer, so counting is exact and owes the filesystem nothing.
 static uint32_t s_fileRecs = 0;
+
+// One card, two tasks. The feed task writes the flight log and now caches photos; the
+// UI task reads a contact history when its card opens. Left unsynchronised that wedged
+// the board -- it kept answering ping while the LVGL loop sat blocked inside FATFS,
+// which is the worst kind of hang because the device still looks alive. Every entry
+// point that touches the card takes this first.
+static SemaphoreHandle_t s_lock = nullptr;
+
+struct SdLock {
+    bool held;
+    explicit SdLock(uint32_t waitMs = 4000)
+        : held(s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(waitMs)) == pdTRUE) {}
+    ~SdLock() { if (held) xSemaphoreGive(s_lock); }
+};
 
 static uint32_t hex_hash(const char *s) {          // FNV-1a, plenty for 6 hex chars
     uint32_t h = 2166136261u;
@@ -277,6 +305,7 @@ bool sd_begin(void) {
                  (unsigned)s_width, s_freqKhz / 1000,
                  (unsigned long long)(s_size / (1024ULL * 1024ULL)));
         Serial.printf("[sd] mounted, %s\n", s_status);
+        if (!s_lock) s_lock = xSemaphoreCreateMutex();
         mkdir(SD_DIR, 0777);
         idx_build();
     } else {
@@ -341,7 +370,131 @@ bool sd_format(void) {
     return ok;
 }
 
+static bool is_icao_hex(const char *h);   // defined with the log below
+
+// Oldest-first eviction, by modification time. Only runs when the cache is full, so the
+// directory walk is rare; the alternative -- letting it grow forever -- eventually makes
+// every directory operation slow and fills a small card.
+static void photo_evict_one(void) {
+    DIR *d = opendir(SD_PHOTOS);
+    if (!d) return;
+    char oldest[64] = "";
+    time_t oldestT = 0;
+    uint32_t n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != nullptr) {
+        if (e->d_name[0] == '.') continue;
+        if (e->d_name[0] != 'p' && e->d_name[0] != 'P') continue;   // not a photo
+        char path[96];
+        snprintf(path, sizeof(path), "%s/%s", SD_PHOTOS, e->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0) continue;
+        ++n;
+        if (!oldest[0] || st.st_mtime < oldestT) {
+            oldestT = st.st_mtime;
+            snprintf(oldest, sizeof(oldest), "%s", e->d_name);
+        }
+    }
+    closedir(d);
+    if (n < SD_PHOTO_MAX || !oldest[0]) return;
+    char path[96];
+    snprintf(path, sizeof(path), "%s/%s", SD_PHOTOS, oldest);
+    remove(path);
+    // the credit sidecar goes with it
+    char *dot = strrchr(path, '.');
+    if (dot) { strcpy(dot, ".txt"); remove(path); }
+}
+
+bool sd_photo_save(const char *hex, const void *jpg, size_t len, const char *credit) {
+    SdLock lk; if (!lk.held) return false;
+    if (!s_mounted || !hex || !hex[0] || !jpg || !len) return false;
+    if (!is_icao_hex(hex)) return false;
+    photo_evict_one();
+
+    char path[96];
+    snprintf(path, sizeof(path), "%s/p_%s.jpg", SD_PHOTOS, hex);
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    const bool ok = (fwrite(jpg, 1, len, f) == len);
+    fclose(f);
+    if (!ok) { remove(path); return false; }
+
+    // Attribution travels with the picture. Planespotters is free for non-commercial use
+    // on the condition the photographer is credited, so a cached photo that lost its
+    // credit would be a photo we are not allowed to show.
+    if (credit && credit[0]) {
+        snprintf(path, sizeof(path), "%s/p_%s.txt", SD_PHOTOS, hex);
+        FILE *c = fopen(path, "wb");
+        if (c) { fwrite(credit, 1, strlen(credit), c); fclose(c); }
+    }
+    return true;
+}
+
+bool sd_photo_load(const char *hex, unsigned char **jpg, size_t *len,
+                   char *credit, size_t creditLen) {
+    SdLock lk; if (!lk.held) return false;
+    if (jpg) *jpg = nullptr;
+    if (len) *len = 0;
+    if (credit && creditLen) credit[0] = 0;
+    if (!s_mounted || !hex || !hex[0] || !jpg || !len) return false;
+
+    char path[96];
+    snprintf(path, sizeof(path), "%s/p_%s.jpg", SD_PHOTOS, hex);
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size <= 0 || st.st_size > 512 * 1024) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    unsigned char *buf = (unsigned char *)heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM);
+    if (!buf) { fclose(f); return false; }
+    const size_t got = fread(buf, 1, (size_t)st.st_size, f);
+    fclose(f);
+    if (got != (size_t)st.st_size) { heap_caps_free(buf); return false; }
+
+    if (credit && creditLen) {
+        snprintf(path, sizeof(path), "%s/p_%s.txt", SD_PHOTOS, hex);
+        FILE *c = fopen(path, "rb");
+        if (c) {
+            const size_t n = fread(credit, 1, creditLen - 1, c);
+            credit[n] = 0;
+            fclose(c);
+        }
+    }
+    *jpg = buf;
+    *len = got;
+    return true;
+}
+
+void sd_photo_forget(const char *hex) {
+    SdLock lk; if (!lk.held) return;
+    if (!s_mounted || !hex || !hex[0]) return;
+    char path[96];
+    snprintf(path, sizeof(path), "%s/p_%s.jpg", SD_PHOTOS, hex);
+    remove(path);
+    snprintf(path, sizeof(path), "%s/p_%s.txt", SD_PHOTOS, hex);
+    remove(path);
+}
+
+uint32_t sd_photo_count(void) {
+    SdLock lk; if (!lk.held) return 0;
+    if (!s_mounted) return 0;
+    DIR *d = opendir(SD_PHOTOS);
+    if (!d) return 0;
+    uint32_t n = 0;
+    struct dirent *e;
+    // Case-insensitive: FATFS hands back uppercase 8.3 names when long filenames are
+    // off, so a literal ".jpg" test counts nothing even with a full cache.
+    while ((e = readdir(d)) != nullptr) {
+        if (e->d_name[0] == '.') continue;
+        if (e->d_name[0] != 'p' && e->d_name[0] != 'P') continue;
+        const char *dot = strrchr(e->d_name, '.');
+        if (dot && (dot[1] | 32) == 'j' && (dot[2] | 32) == 'p' && (dot[3] | 32) == 'g') ++n;
+    }
+    closedir(d);
+    return n;
+}
+
 bool sd_seen_erase(void) {
+    SdLock lk; if (!lk.held) return false;
     if (!s_mounted) return false;
     remove(SD_SEEN);
     s_idxLen = 0;
@@ -350,6 +503,7 @@ bool sd_seen_erase(void) {
 }
 
 bool sd_seen_lookup(const char *hex, SdSeen *out) {
+    SdLock lk; if (!lk.held) return false;
     if (!s_mounted || !hex || !hex[0] || !out) return false;
     const uint32_t rec = rec_lookup(hex);
     if (rec == UINT32_MAX) return false;
@@ -377,6 +531,7 @@ static bool is_icao_hex(const char *h) {
 }
 
 void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t nowEpoch) {
+    SdLock lk; if (!lk.held) return;
     if (!s_mounted || !hex || !hex[0]) return;
     if (!is_icao_hex(hex)) return;
 
@@ -444,6 +599,12 @@ uint64_t    sd_size_bytes(void) { return 0; }
 const char *sd_status(void)     { return "no slot"; }
 bool        sd_format(void)     { return false; }
 void        sd_clear_crash_flag(void) {}
+bool        sd_photo_save(const char *, const void *, size_t, const char *) { return false; }
+bool        sd_photo_load(const char *, unsigned char **j, size_t *l, char *c, size_t cn) {
+    if (j) *j = nullptr; if (l) *l = 0; if (c && cn) c[0] = 0; return false;
+}
+void        sd_photo_forget(const char *) {}
+uint32_t    sd_photo_count(void) { return 0; }
 void        sd_counters(uint32_t *h, uint32_t *a, uint32_t *r) {
     if (h) *h = 0; if (a) *a = 0; if (r) *r = 0;
 }
