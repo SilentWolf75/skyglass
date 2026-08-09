@@ -139,10 +139,12 @@ Three things this cost, all of them board-specific:
   tracks with ephemeral non-ICAO ids, which would otherwise arrive as thousands of new
   "airframes" a minute.
 
-Known defect: roughly a third of contacts miss on lookup each poll and are appended
-again, so the file grows faster than it should and visit counts read high. `sd_hit`,
-`sd_app` and `sd_rderr` in `/diag` measure it. Nothing is destroyed; the settings page
-can erase the log.
+One more trap, worth writing down because it cost an evening: the record number must
+come from `stat()` *after* the write, not from `ftell()` before it. Computed the second
+way it did not match where the data landed, so every record failed to read back and each
+contact was re-appended on the next poll - a few hundred spurious records a minute and
+visit counts that climbed on their own. `sd_hit` and `sd_app` in `/diag` are the check:
+at steady state appends should be near zero and hits should dominate.
 
 ## Airport markers
 The embedded list (`tools/gen_airports.py` -> `src/airports_data.h`) keeps every airport
