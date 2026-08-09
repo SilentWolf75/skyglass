@@ -10,6 +10,10 @@
 #include <sdmmc_cmd.h>
 #include <esp_heap_caps.h>
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
+#include <sd_pwr_ctrl.h>
+#include <diskio_impl.h>
+#include <diskio_sdmmc.h>
+#include <ff.h>
 #include <sys/stat.h>
 #include <Preferences.h>
 
@@ -25,6 +29,7 @@ static char     s_status[64] = "not probed";
 static esp_err_t s_lastErr = ESP_OK;
 static uint32_t s_probeMB = 0, s_probeSect = 0;   // what the card said before FATFS refused
 static char     s_probeName[8] = "";
+static int      s_fsErr = 0;      // FRESULT when FATFS is the thing refusing
 
 // On-card record. Fixed 32 bytes so a record's offset is index*32 and an update is a
 // seek plus one write -- no rewriting the file to change one aircraft.
@@ -122,81 +127,95 @@ static void idx_build(void) {
     Serial.printf("[sd] flight log: %u airframes on file\n", (unsigned)s_idxLen);
 }
 
-// Disabled, and not because of the card. On this board the ESP32-C6 radio is attached
-// over SDIO, and sdmmc_host_init()/deinit() act on the whole SDMMC peripheral rather than
-// one slot -- so any mount attempt fights the host the WiFi link is running on, and a
-// teardown kills the link outright. That is what froze the board with the slot empty.
+// Mounting slot 0 by hand, because esp_vfs_fat_sdmmc_mount() cannot be used here.
 //
-// Re-enabling this means driving slot 0 by hand on the already-running host
-// (sdmmc_host_init_slot + sdmmc_card_init) and never calling the global init or deinit.
-// Until that exists, every entry point refuses rather than risking the radio.
-#define SD_HOST_SHARED_WITH_C6 1
+// The ESP32-C6 radio on this board is an SDIO device on the same SDMMC controller (it
+// takes slot 1; the card is slot 0). sdmmc_host_init() and sdmmc_host_deinit() act on
+// the whole peripheral, so the convenience mount -- which always initialises the host and
+// tears it down on failure -- fights the link the WiFi runs on. That is what froze the
+// board, with the slot empty, and it had nothing to do with the card.
+//
+// So: tolerate a host that is already up, bring up only slot 0, and never deinit. The
+// teardown path unwinds exactly what it created and leaves the host alone.
+static FATFS *s_fs = nullptr;
+static BYTE   s_pdrv = 0xFF;
+static sd_pwr_ctrl_handle_t s_pwr = nullptr;
+
+static void unmount_slot(void) {
+    if (s_pdrv != 0xFF) {
+        char drv[3] = { (char)('0' + s_pdrv), ':', 0 };
+        f_mount(NULL, drv, 0);
+        ff_diskio_unregister(s_pdrv);
+        s_pdrv = 0xFF;
+    }
+    esp_vfs_fat_unregister_path(SD_MOUNT);
+    s_fs = nullptr;
+    if (s_card) { free(s_card); s_card = nullptr; }
+    // Deliberately NO sdmmc_host_deinit(): the C6 is on the other slot of this host.
+}
 
 static bool mount_once(bool oneBit, int freqKhz, bool formatIfFailed) {
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.slot = SDMMC_HOST_SLOT_0;
-    host.max_freq_khz = freqKhz;
+    (void)formatIfFailed;
 
-    // The bit that makes this work at all. On the P4 the SD bus IO rail is fed by an
-    // on-chip LDO (channel 4) which is OFF at reset, so without this the card has no
-    // signal voltage, never answers, and the mount fails with ESP_ERR_TIMEOUT -- which
-    // is exactly what this board did. Same shape as the DSI PHY, which runs off internal
-    // LDO channel 3. Taken from Waveshare's own BSP for this P4 family.
-    static sd_pwr_ctrl_handle_t s_pwr = nullptr;
+    // The host may already be up for the C6. That is fine and expected -- take it as
+    // success rather than an error, and on no account initialise or deinit it ourselves
+    // beyond this.
+    const esp_err_t hi = sdmmc_host_init();
+    if (hi != ESP_OK && hi != ESP_ERR_INVALID_STATE) { s_lastErr = hi; return false; }
+
+    // The card's IO rail is an on-chip LDO (channel 4), off at reset. Without it the card
+    // has no signal voltage and never answers -- the original ESP_ERR_TIMEOUT.
     if (!s_pwr) {
         sd_pwr_ctrl_ldo_config_t ldo = {};
         ldo.ldo_chan_id = 4;
-        if (sd_pwr_ctrl_new_on_chip_ldo(&ldo, &s_pwr) != ESP_OK) {
-            Serial.println("[sd] could not open the on-chip LDO for the SD rail");
-            s_pwr = nullptr;
-        }
+        if (sd_pwr_ctrl_new_on_chip_ldo(&ldo, &s_pwr) != ESP_OK) s_pwr = nullptr;
     }
-    // Attaching the handle is enough: the SDMMC driver sets the rail voltage through it
-    // during init. The vendor BSP also calls set_io_voltage() by hand, but the driver
-    // struct is opaque in this IDF, and that call is belt-and-braces rather than load
-    // bearing -- the handle is what turns the LDO on.
-    if (s_pwr) host.pwr_ctrl_handle = s_pwr;
+    if (s_pwr) sd_pwr_ctrl_set_io_voltage(s_pwr, 3300);
 
-    // Slot 0 is routed through the IO MUX, so the pins are fixed and are deliberately
-    // NOT set here -- the vendor BSP does the same. PIN_SD_* stay in the board header as
-    // documentation of where those signals physically go.
     sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
     slot.cd = SDMMC_SLOT_NO_CD;
     slot.wp = SDMMC_SLOT_NO_WP;
     slot.width = oneBit ? 1 : 4;
     slot.flags = 0;
+    s_lastErr = sdmmc_host_init_slot(SDMMC_HOST_SLOT_0, &slot);
+    if (s_lastErr != ESP_OK) return false;
 
-    esp_vfs_fat_sdmmc_mount_config_t cfg = {};
-    cfg.format_if_mount_failed = formatIfFailed;   // only ever true for an explicit format
-    cfg.max_files = 4;
-    cfg.allocation_unit_size = 64 * 1024;
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = freqKhz;
+    if (s_pwr) host.pwr_ctrl_handle = s_pwr;
 
-    s_lastErr = esp_vfs_fat_sdmmc_mount(SD_MOUNT, &host, &slot, &cfg, &s_card);
-    if (s_lastErr == ESP_OK) return true;
-    // Keep whatever the card told us before tearing down. ESP_FAIL here means the card
-    // initialised fine and it was FATFS that refused, so its identity is the evidence
-    // that separates "bad card" from "filesystem this build cannot read".
-    if (s_card) {
-        s_probeMB = (uint32_t)(((uint64_t)s_card->csd.capacity * s_card->csd.sector_size)
-                               / (1024ULL * 1024ULL));
-        s_probeSect = (uint32_t)s_card->csd.sector_size;
-        snprintf(s_probeName, sizeof(s_probeName), "%s", s_card->cid.name);
+    s_card = (sdmmc_card_t *)calloc(1, sizeof(sdmmc_card_t));
+    if (!s_card) { s_lastErr = ESP_ERR_NO_MEM; return false; }
+    s_lastErr = sdmmc_card_init(&host, s_card);
+    if (s_lastErr != ESP_OK) { free(s_card); s_card = nullptr; return false; }
+
+    // Card is talking. Everything past here is filesystem.
+    s_probeMB   = (uint32_t)(((uint64_t)s_card->csd.capacity * s_card->csd.sector_size) / (1024ULL * 1024ULL));
+    s_probeSect = (uint32_t)s_card->csd.sector_size;
+    snprintf(s_probeName, sizeof(s_probeName), "%s", s_card->cid.name);
+
+    if (ff_diskio_get_drive(&s_pdrv) != ESP_OK || s_pdrv == 0xFF) {
+        s_lastErr = ESP_ERR_NO_MEM; unmount_slot(); return false;
     }
-    // Clean up properly or the next attempt fails on our own leftovers rather than on the
-    // card. esp_vfs_fat_sdcard_unmount() does nothing useful when the mount never produced
-    // a card, and the host stays initialised -- which turned every retry after the first
-    // into ESP_ERR_INVALID_STATE and made the width/clock fallbacks pure theatre.
-    if (s_card) { esp_vfs_fat_sdcard_unmount(SD_MOUNT, s_card); s_card = nullptr; }
-    sdmmc_host_deinit();          // harmless if it was never up
-    return false;
+    ff_diskio_register_sdmmc(s_pdrv, s_card);
+
+    char drv[3] = { (char)('0' + s_pdrv), ':', 0 };
+    s_lastErr = esp_vfs_fat_register(SD_MOUNT, drv, 4, &s_fs);
+    if (s_lastErr != ESP_OK) { unmount_slot(); return false; }
+
+    const FRESULT fr = f_mount(s_fs, drv, 1);
+    if (fr != FR_OK) {
+        s_lastErr = ESP_FAIL;
+        s_fsErr = (int)fr;              // the FATFS reason, which ESP_FAIL alone hides
+        unmount_slot();
+        return false;
+    }
+    return true;
 }
 
 bool sd_begin(void) {
     if (s_mounted) return true;
-#if SD_HOST_SHARED_WITH_C6
-    snprintf(s_status, sizeof(s_status), "unavailable (SDMMC shared with C6 WiFi)");
-    return false;
-#endif
 
     // Crash-loop guard. Bringing the card up put the board in a boot loop the first time
     // it met a real card: the mounted-card path had only ever been exercised with an
@@ -235,9 +254,8 @@ bool sd_begin(void) {
         idx_build();
     } else {
         if (s_probeMB)
-            snprintf(s_status, sizeof(s_status), "%s; card %s %uMB/%uB sect",
-                     esp_err_to_name(s_lastErr), s_probeName, (unsigned)s_probeMB,
-                     (unsigned)s_probeSect);
+            snprintf(s_status, sizeof(s_status), "%s f%d; card %s %uMB",
+                     esp_err_to_name(s_lastErr), s_fsErr, s_probeName, (unsigned)s_probeMB);
         else
             snprintf(s_status, sizeof(s_status), "not mounted: %s", esp_err_to_name(s_lastErr));
         Serial.printf("[sd] not mounted: %s\n", esp_err_to_name(s_lastErr));
@@ -266,10 +284,6 @@ const char *sd_status(void)     { return s_status; }
 uint32_t    sd_seen_records(void) { return s_idxLen; }
 
 bool sd_format(void) {
-#if SD_HOST_SHARED_WITH_C6
-    Serial.println("[sd] format refused: the SDMMC host belongs to the C6 WiFi link");
-    return false;
-#endif
     Serial.println("[sd] formatting card");
     if (!s_mounted) {
         // The case that matters: a card this device cannot read. Mounting with
