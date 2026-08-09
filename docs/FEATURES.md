@@ -107,17 +107,20 @@ need a third-party account are off until a key is entered on the config page.
 
 ## Runway outlines
 Each airport also draws its actual runways, from the OurAirports thresholds
-(`tools/gen_runways.py` -> `src/runways_data.h`): 7,888 runways, ~123 KB. Both ends are
+(`tools/gen_runways.py` -> `src/runways_data.h`): 14,102 runways, ~220 KB. Both ends are
 projected independently rather than deriving one from a heading and a length, so a strip
 lies on its real bearing at its real length - KIXD reads as its 04/22 and 18/36 rather
 than a dot.
 
-Restricted to airports the marker list also carries. Taking every airport in the dataset
-drew strips at fields with no marker and no ident beside them - an unidentifiable smudge
-on the scope, which is what it looked like. The two files share a membership test at
-generation time only, so there is no runtime index coupling to drift; but they must be
-generated from one snapshot, or an airport present on one side and not the other brings
-the unnamed runway back for that field. Runways follow the airports toggle, draw under the markers so the ident
+Every runway drawn belongs to an airport that also gets a marker, and the marker list
+earns that by admitting anything with a surveyed runway (see below). The first attempt at
+this went the other way - dropping runways whose airport had no marker - which quietly
+deleted Gardner Municipal (K34), a real field with two real runways whose only sin is
+having no IATA code. An airport good enough to draw is good enough to name.
+
+The two generators share the membership rule at generation time only, so there is no
+runtime index coupling to drift; but they must be run from one snapshot, and their
+filters must be kept in step, or a strip reappears with no ident beside it. Runways follow the airports toggle, draw under the markers so the ident
 stays readable, and are dropped during projection once their projected length falls under
 5 px - zoomed out they are smudges around a dot that is already there.
 
@@ -150,7 +153,10 @@ at steady state appends should be near zero and hits should dominate.
 
 ## Airport markers
 The embedded list (`tools/gen_airports.py` -> `src/airports_data.h`) keeps every airport
-carrying an IATA code, plus all large airports: 8,802 entries, ~129 KB.
+carrying an IATA code, all large airports, and anything with a surveyed runway:
+13,906 entries, ~204 KB. That last rule exists because runways are drawn: Gardner
+Municipal (K34) has two of them and no IATA code, so without it the scope drew strips
+nothing named.
 
 Two details are easy to get wrong and were:
 - **Small airports must be included.** OurAirports classes plenty of real, busy GA fields

@@ -37,8 +37,12 @@ def main():
     dst = sys.argv[2] if len(sys.argv) > 2 else "src/runways_data.h"
     apt = sys.argv[3] if len(sys.argv) > 3 else "/tmp/airports.csv"
 
-    # Same filter as gen_airports.py, matched on `ident` because that is what runways.csv
-    # keys on (the display code is IATA for large fields, which would not match).
+    # Must mirror gen_airports.py's filter, matched on `ident` because that is what
+    # runways.csv keys on (the display code is IATA for large fields and would not match).
+    # gen_airports.py admits any classified airport with a surveyed runway, so the IATA
+    # requirement is dropped here too -- an airport reaching this loop with runways to
+    # draw is one that gets a marker. Keeping the two rules in step is what stops a strip
+    # appearing with no ident beside it.
     keep = set()
     with open(apt, newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
@@ -48,7 +52,7 @@ def main():
             local = (r.get("local_code") or "").strip().upper()
             if t == "large_airport":
                 large = 1
-            elif t in ("medium_airport", "small_airport") and iata:
+            elif t in ("medium_airport", "small_airport"):
                 large = 0
             else:
                 continue
