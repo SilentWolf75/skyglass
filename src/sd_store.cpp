@@ -426,6 +426,9 @@ uint64_t    sd_size_bytes(void) { return 0; }
 const char *sd_status(void)     { return "no slot"; }
 bool        sd_format(void)     { return false; }
 void        sd_clear_crash_flag(void) {}
+void        sd_counters(uint32_t *h, uint32_t *a, uint32_t *r) {
+    if (h) *h = 0; if (a) *a = 0; if (r) *r = 0;
+}
 uint32_t    sd_seen_records(void) { return 0; }
 bool        sd_seen_erase(void) { return false; }
 bool        sd_seen_lookup(const char *, SdSeen *) { return false; }
