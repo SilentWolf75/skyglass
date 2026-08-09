@@ -30,6 +30,7 @@ static esp_err_t s_lastErr = ESP_OK;
 static uint32_t s_probeMB = 0, s_probeSect = 0;   // what the card said before FATFS refused
 static char     s_probeName[8] = "";
 static int      s_fsErr = 0;      // FRESULT when FATFS is the thing refusing
+static uint32_t s_hits = 0, s_appends = 0, s_readErr = 0, s_seekErr = 0;
 
 // On-card record. Fixed 32 bytes so a record's offset is index*32 and an update is a
 // seek plus one write -- no rewriting the file to change one aircraft.
@@ -78,10 +79,14 @@ static uint32_t idx_find_pos(uint32_t h) {
 
 static bool rec_read(uint32_t rec, SeenRec *out) {
     FILE *f = fopen(SD_SEEN, "rb");
-    if (!f) return false;
-    bool ok = (fseek(f, (long)rec * (long)sizeof(SeenRec), SEEK_SET) == 0) &&
-              (fread(out, sizeof(SeenRec), 1, f) == 1);
+    if (!f) { ++s_readErr; return false; }
+    const bool ok = (fseek(f, (long)rec * (long)sizeof(SeenRec), SEEK_SET) == 0) &&
+                    (fread(out, sizeof(SeenRec), 1, f) == 1);
     fclose(f);
+    // A short read means the index points past the end of the file. Silently treating
+    // that as "not on file" is what let a bad record number turn into an endless stream
+    // of duplicate appends, so it is counted separately from a file that will not open.
+    if (!ok) ++s_seekErr;
     return ok;
 }
 
@@ -282,6 +287,10 @@ uint8_t     sd_bus_width(void)  { return s_width; }
 uint64_t    sd_size_bytes(void) { return s_size; }
 const char *sd_status(void)     { return s_status; }
 uint32_t    sd_seen_records(void) { return s_idxLen; }
+void sd_counters(uint32_t *hit, uint32_t *app, uint32_t *rderr) {
+    if (hit) *hit = s_hits; if (app) *app = s_appends;
+    if (rderr) *rderr = s_readErr * 1000u + (s_seekErr > 999u ? 999u : s_seekErr);
+}
 
 bool sd_format(void) {
     Serial.println("[sd] formatting card");
@@ -330,8 +339,32 @@ bool sd_seen_lookup(const char *hex, SdSeen *out) {
     return true;
 }
 
+// KNOWN DEFECT: about a third of contacts miss on lookup each poll and get appended
+// again, so the file grows by a few hundred records a minute instead of settling at the
+// number of distinct airframes. Measured, not guessed: sd_hit/sd_app in /diag show the
+// ratio, and sd_rderr is zero -- every append is indexed, no read or seek fails, yet the
+// next poll misses. So the index is resolving to records whose hex does not match.
+// Leading suspect is the unsynchronised access between sd_log_seen() on the feed task and
+// sd_seen_lookup() on the UI task, which share s_idx while it is being memmove'd. The
+// data is harmless (an oversized file and an inflated "seen Nx"), but it is wrong.
+//
+// Real airframes only: exactly six hex digits. A local receiver also reports TIS-B and
+// ADS-R tracks, which tar1090 prefixes with '~' and which carry ephemeral, non-ICAO
+// addresses that change constantly. Logging those grew the file by thousands of "new
+// airframes" in minutes and would make "seen 3x" meaningless.
+static bool is_icao_hex(const char *h) {
+    int n = 0;
+    for (const char *p = h; *p; ++p, ++n) {
+        if (n >= 6) return false;
+        const char c = *p | 0x20;
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return n == 6;
+}
+
 void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t nowEpoch) {
     if (!s_mounted || !hex || !hex[0]) return;
+    if (!is_icao_hex(hex)) return;
 
     const uint16_t dam = (distKm > 0.0f && distKm < 650.0f)
                              ? (uint16_t)(distKm * 100.0f)   // km -> units of 10 m
@@ -339,6 +372,7 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
     const uint32_t rec = rec_lookup(hex);
 
     if (rec != UINT32_MAX) {
+        ++s_hits;
         SeenRec r;
         if (!rec_read(rec, &r)) return;
         // A contact that drops off the feed for a moment is the same visit; only a real
@@ -356,6 +390,7 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
     }
 
     // First time this airframe has ever been seen: append and index it.
+    ++s_appends;
     SeenRec r = {};
     strncpy(r.hex, hex, sizeof(r.hex) - 1);
     if (callsign && callsign[0]) strncpy(r.call, callsign, sizeof(r.call) - 1);
@@ -364,10 +399,12 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
     r.lastSeen = nowEpoch;
     r.closestDam = dam;
 
-    FILE *f = fopen(SD_SEEN, "a+b");
+    FILE *f = fopen(SD_SEEN, "r+b");
+    if (!f) f = fopen(SD_SEEN, "w+b");         // first record on a fresh card
     if (!f) return;
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
     const long end = ftell(f);
+    if (end < 0 || (end % (long)sizeof(SeenRec)) != 0) { fclose(f); return; }
     const uint32_t newRec = (uint32_t)(end / (long)sizeof(SeenRec));
     const bool wrote = (fwrite(&r, sizeof(r), 1, f) == 1);
     fclose(f);

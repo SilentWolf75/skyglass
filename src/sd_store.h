@@ -44,5 +44,6 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
 // Read-only lookup for the detail card. False if there is no card or no record.
 bool sd_seen_lookup(const char *hex, SdSeen *out);
 
-uint32_t sd_seen_records(void);   // how many airframes are on file
+uint32_t sd_seen_records(void);
+void     sd_counters(uint32_t *hit, uint32_t *app, uint32_t *rderr);   // lookup diagnosis   // how many airframes are on file
 bool     sd_seen_erase(void);     // wipe the log, keep everything else on the card
