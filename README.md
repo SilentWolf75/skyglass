@@ -30,7 +30,7 @@ Every image on this page is the **real framebuffer from my device**, pulled over
 | Radar | Detail card | Contacts |
 |:---:|:---:|:---:|
 | <img src="docs/img/screens/radar.png" width="240"> | <img src="docs/img/screens/detail.png" width="240"> | <img src="docs/img/screens/list.png" width="240"> |
-| Aircraft drawn by type, altitude-coloured, airports labelled by ident | Tap a contact: callsign, registration, type, altitude, speed, heading, squawk — plus airline, route and a photo of the actual airframe | Nearest-first contact list |
+| Aircraft drawn by type, altitude-coloured, airports labelled by ident with their real runways | Tap a contact: callsign, registration, type, altitude, speed, heading, squawk — plus airline, route and a photo of the actual airframe | Nearest-first contact list |
 
 | Tracked flight | Stats | Clock |
 |:---:|:---:|:---:|
@@ -308,7 +308,7 @@ src/
   sim_main.cpp       native SDL simulator (not flashed)
 include/lv_conf.h    LVGL config (v8)
 web/flash/           browser web-flasher (ESP Web Tools)
-tools/               grab_screens.py, gen_alert_sound.py, gen_airports.py
+tools/               grab_screens.py, gen_alert_sound.py, gen_airports.py, gen_runways.py
 scripts/             build_webflasher.sh
 docs/                hardware / data-source / architecture / feature notes
 ```

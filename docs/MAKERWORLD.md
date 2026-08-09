@@ -57,6 +57,8 @@ speaker, a small kickstand foot, and an engraved logo. Snap-/screw-together, no 
   `skyglass.local` (centre point, range, theme, brightness, sound, dim timer).
 - 🔊 **Alert pings** (built-in speaker): a soft ping for new contacts, an urgent beep
   for emergency/military squawks. Volume + mute on the web.
+- 🛬 **Real runways**: nearby airports draw their actual strips at true bearing and
+  length, so you can see which way traffic is landing.
 - 🔋 **Battery-aware** (optional LiPo): on-screen %, low warning, slower polling on
   battery. 🕐 **Real-time clock** keeps time/date across power loss; **NTP** sync.
 - 🌙 **Smart dimming**: configurable idle auto-dim (Dim screen after…) and **face-down

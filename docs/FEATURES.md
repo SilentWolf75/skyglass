@@ -105,6 +105,45 @@ need a third-party account are off until a key is entered on the config page.
     Rejections name the actual problem ("need 16-bit WAV", "compressed WAV",
     "sample rate must be 8-48 kHz") rather than failing generically.
 
+## Runway outlines
+Each airport also draws its actual runways, from the OurAirports thresholds
+(`tools/gen_runways.py` -> `src/runways_data.h`): 14,847 runways, ~232 KB. Both ends are
+projected independently rather than deriving one from a heading and a length, so a strip
+lies on its real bearing at its real length - KIXD reads as its 04/22 and 18/36 rather
+than a dot.
+
+Deliberately not keyed to `airports_data.h`. Linking the two by index would mean
+regenerating both from one snapshot every time, and they already disagreed by one airport
+because the upstream data moved between generations; absolute endpoints cannot drift out
+of alignment. Runways follow the airports toggle, draw under the markers so the ident
+stays readable, and are dropped during projection once their projected length falls under
+5 px - zoomed out they are smudges around a dot that is already there.
+
+## Flight log (microSD, P4 only)
+One fixed 32-byte record per airframe on the card, keyed by ICAO hex: visit count, first
+and last seen, closest-ever approach. The detail card folds it into the route line as
+`seen 7x, closest 1.2 nm`. Aggregates rather than a raw sighting list, because the
+question being asked is "how often has this one been over", and answering that from an
+append-only log would mean scanning it every time.
+
+Three things this cost, all of them board-specific:
+- **The SD rail is an on-chip LDO (channel 4), off at reset.** Without switching it on the
+  card has no signal voltage and never answers - the mount fails with `ESP_ERR_TIMEOUT`
+  and looks for all the world like an empty slot. Same shape as the DSI PHY on LDO 3.
+- **`esp_vfs_fat_sdmmc_mount()` cannot be used here.** The ESP32-C6 radio is an SDIO
+  device on the *other slot of the same SDMMC host*, and that helper always initialises
+  the host and tears it down on failure. Using it froze the board with the slot empty.
+  The mount is done by hand instead: tolerate a host that is already up, bring up slot 0
+  only, register the FATFS drive directly, and never call `sdmmc_host_deinit()`.
+- **Only real ICAO addresses are logged.** A local receiver also reports TIS-B and ADS-R
+  tracks with ephemeral non-ICAO ids, which would otherwise arrive as thousands of new
+  "airframes" a minute.
+
+Known defect: roughly a third of contacts miss on lookup each poll and are appended
+again, so the file grows faster than it should and visit counts read high. `sd_hit`,
+`sd_app` and `sd_rderr` in `/diag` measure it. Nothing is destroyed; the settings page
+can erase the log.
+
 ## Airport markers
 The embedded list (`tools/gen_airports.py` -> `src/airports_data.h`) keeps every airport
 carrying an IATA code, plus all large airports: 8,802 entries, ~129 KB.

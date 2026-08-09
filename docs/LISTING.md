@@ -57,6 +57,11 @@ engraved logo. No soldering — the Waveshare board carries all the electronics.
 - **Amber CRT** — warm amber monochrome scope.
 - **Military** — night-vision green scope.
 
+**Map detail**
+- Nearby airports are marked and labelled by the ident people actually use, and each one
+  draws its **real runways** - true position, bearing and length, so you can see which way
+  traffic is landing. Fades out as you zoom out.
+
 **Status HUD**
 - Wi-Fi indicator (turns **amber** if the data feed is failing), in-range aircraft count,
   clock, **battery %** (charging bolt; turns **red** when low), and the date.
