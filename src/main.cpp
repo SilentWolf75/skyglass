@@ -1748,7 +1748,9 @@ void setup() {
     // sound exists, and an uploaded one only becomes visible once the filesystem is up.
     if (!LittleFS.begin(true)) Serial.println("[fs] LittleFS mount failed (uploads unavailable)");
     else audio_load_sample();   // restore a previously uploaded alert sound
-    sd_begin();     // optional; nothing depends on it yet, so a missing card is fine
+    // SD is probed from loop() a few seconds in, not here. Nothing depends on it, and
+    // doing it during setup() meant a fault in the card path stopped the board before
+    // the display, WiFi or OTA existed -- unrecoverable without a cable.
 
     loadSettings();
     updater_begin();       // restore the auto-check / auto-install preferences
@@ -1917,6 +1919,12 @@ void setup() {
     g_web.on("/ais", handleAis);
     g_web.on("/adsblocal", handleAdsbLocal);
 #if BOARD_HAS_SD
+    g_web.on("/sdretry", []() {       // re-arm after a probe crash and try again
+        sd_clear_crash_flag();
+        g_web.send(200, "text/plain", sd_begin() ? sd_status() : sd_status());
+    });
+#endif
+#if BOARD_HAS_SD
     g_web.on("/sdlog", []() {                 // erase the sighting history only
         const bool ok = g_web.hasArg("erase") && sd_seen_erase();
         g_web.send(200, "text/plain", ok ? "erased" : "no card");
@@ -2030,6 +2038,10 @@ void loop() {
     if (g_useGps) gps_poll();       // pull NMEA from the LC76G (only when GPS auto-location is on)
 
     // scheduled reboot after a fresh WiFi config (see setSaveConfigCallback)
+    // No automatic SD probe. It went from "boot loop with a card in" to "freezes the
+    // board with the slot empty", so it does not run on its own at all: the card is
+    // brought up only when someone asks for it at /sdretry. Nothing in the firmware
+    // depends on the card, so costing the board its boot to look for one is a bad trade.
     if (g_rebootAtMs && (int32_t)(millis() - g_rebootAtMs) >= 0) { delay(50); ESP.restart(); }
 
     // OTA: set up once WiFi is up, then service it every loop (flash over the air)

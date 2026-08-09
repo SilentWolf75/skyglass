@@ -10,6 +10,8 @@
 #include <sdmmc_cmd.h>
 #include <esp_heap_caps.h>
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
+#include <sys/stat.h>
+#include <Preferences.h>
 
 #define SD_MOUNT   "/sdcard"
 #define SD_DIR     SD_MOUNT "/skyglass"
@@ -21,6 +23,8 @@ static uint8_t  s_width   = 0;
 static uint64_t s_size    = 0;
 static char     s_status[64] = "not probed";
 static esp_err_t s_lastErr = ESP_OK;
+static uint32_t s_probeMB = 0, s_probeSect = 0;   // what the card said before FATFS refused
+static char     s_probeName[8] = "";
 
 // On-card record. Fixed 32 bytes so a record's offset is index*32 and an update is a
 // seek plus one write -- no rewriting the file to change one aircraft.
@@ -159,13 +163,44 @@ static bool mount_once(bool oneBit, int freqKhz, bool formatIfFailed) {
 
     s_lastErr = esp_vfs_fat_sdmmc_mount(SD_MOUNT, &host, &slot, &cfg, &s_card);
     if (s_lastErr == ESP_OK) return true;
-    esp_vfs_fat_sdcard_unmount(SD_MOUNT, s_card);
-    s_card = nullptr;
+    // Keep whatever the card told us before tearing down. ESP_FAIL here means the card
+    // initialised fine and it was FATFS that refused, so its identity is the evidence
+    // that separates "bad card" from "filesystem this build cannot read".
+    if (s_card) {
+        s_probeMB = (uint32_t)(((uint64_t)s_card->csd.capacity * s_card->csd.sector_size)
+                               / (1024ULL * 1024ULL));
+        s_probeSect = (uint32_t)s_card->csd.sector_size;
+        snprintf(s_probeName, sizeof(s_probeName), "%s", s_card->cid.name);
+    }
+    // Clean up properly or the next attempt fails on our own leftovers rather than on the
+    // card. esp_vfs_fat_sdcard_unmount() does nothing useful when the mount never produced
+    // a card, and the host stays initialised -- which turned every retry after the first
+    // into ESP_ERR_INVALID_STATE and made the width/clock fallbacks pure theatre.
+    if (s_card) { esp_vfs_fat_sdcard_unmount(SD_MOUNT, s_card); s_card = nullptr; }
+    sdmmc_host_deinit();          // harmless if it was never up
     return false;
 }
 
 bool sd_begin(void) {
     if (s_mounted) return true;
+
+    // Crash-loop guard. Bringing the card up put the board in a boot loop the first time
+    // it met a real card: the mounted-card path had only ever been exercised with an
+    // empty slot. A flag is raised in NVS before probing and cleared afterwards, so a
+    // reset that happens in between is still recorded -- and the next boot skips the card
+    // entirely rather than looping. An optional peripheral must never cost you the board.
+    {
+        Preferences pv;
+        pv.begin("capsuleradar", false);
+        if (pv.getBool("sdcrash", false)) {
+            pv.end();
+            snprintf(s_status, sizeof(s_status), "disabled (crashed while probing)");
+            Serial.println("[sd] skipped: the last probe did not survive. /sdretry to try again.");
+            return false;
+        }
+        pv.putBool("sdcrash", true);
+        pv.end();
+    }
 
     // One pass per bus width and clock. No GPIO power dance: the earlier version drove
     // GPIO45 on the theory that a FET gated the card rail, which no vendor BSP does and
@@ -185,10 +220,29 @@ bool sd_begin(void) {
         mkdir(SD_DIR, 0777);
         idx_build();
     } else {
-        snprintf(s_status, sizeof(s_status), "not mounted: %s", esp_err_to_name(s_lastErr));
+        if (s_probeMB)
+            snprintf(s_status, sizeof(s_status), "%s; card %s %uMB/%uB sect",
+                     esp_err_to_name(s_lastErr), s_probeName, (unsigned)s_probeMB,
+                     (unsigned)s_probeSect);
+        else
+            snprintf(s_status, sizeof(s_status), "not mounted: %s", esp_err_to_name(s_lastErr));
         Serial.printf("[sd] not mounted: %s\n", esp_err_to_name(s_lastErr));
     }
+    {   // got here at all: whatever happened, it was not a reset
+        Preferences pv;
+        pv.begin("capsuleradar", false);
+        pv.putBool("sdcrash", false);
+        pv.end();
+    }
     return s_mounted;
+}
+
+// Clear the guard by hand after a crash, so the card can be retried without reflashing.
+void sd_clear_crash_flag(void) {
+    Preferences pv;
+    pv.begin("capsuleradar", false);
+    pv.putBool("sdcrash", false);
+    pv.end();
 }
 
 bool        sd_mounted(void)    { return s_mounted; }
@@ -302,6 +356,7 @@ uint8_t     sd_bus_width(void)  { return 0; }
 uint64_t    sd_size_bytes(void) { return 0; }
 const char *sd_status(void)     { return "no slot"; }
 bool        sd_format(void)     { return false; }
+void        sd_clear_crash_flag(void) {}
 uint32_t    sd_seen_records(void) { return 0; }
 bool        sd_seen_erase(void) { return false; }
 bool        sd_seen_lookup(const char *, SdSeen *) { return false; }

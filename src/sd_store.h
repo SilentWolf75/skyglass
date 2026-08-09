@@ -21,6 +21,7 @@ const char *sd_status(void);      // short human string for /diag
 // Reformat the whole card as FAT and remount. Destroys everything on it, which is why
 // nothing calls this without an explicit confirmed action from the user.
 bool sd_format(void);
+void sd_clear_crash_flag(void);   // re-arm after a probe crash
 
 // ---- flight log --------------------------------------------------------------------
 // One fixed-size record per airframe, keyed by ICAO hex. Aggregates rather than a raw
