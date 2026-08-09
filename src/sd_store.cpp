@@ -29,6 +29,7 @@ static uint8_t  s_width   = 0;
 static uint64_t s_size    = 0;
 static char     s_status[64] = "not probed";
 static esp_err_t s_lastErr = ESP_OK;
+static int      s_freqKhz = 0;    // clock the link actually trained at
 static uint32_t s_probeMB = 0, s_probeSect = 0;   // what the card said before FATFS refused
 static char     s_probeName[8] = "";
 static int      s_fsErr = 0;      // FRESULT when FATFS is the thing refusing
@@ -257,17 +258,24 @@ bool sd_begin(void) {
     // One pass per bus width and clock. No GPIO power dance: the earlier version drove
     // GPIO45 on the theory that a FET gated the card rail, which no vendor BSP does and
     // which was never the problem -- the rail is the on-chip LDO handled in mount_once().
+    // Width is the outer preference, clock the inner one. The other way round -- which is
+    // how this was first written -- meant a 4-bit link that would not train at 40 MHz fell
+    // straight to 1-bit at 40 MHz, when 4-bit at 20 MHz was available and strictly better.
+    // That is exactly what happened: one boot came up 1-bit having never tried a slower
+    // 4-bit. Exhaust every clock at four wires before giving up a wire.
     static const int kFreq[] = { SDMMC_FREQ_HIGHSPEED, SDMMC_FREQ_DEFAULT, SDMMC_FREQ_PROBING };
-    for (int fi = 0; fi < 3 && !s_mounted; ++fi)
-        for (int oneBit = 0; oneBit < 2 && !s_mounted; ++oneBit)
+    for (int oneBit = 0; oneBit < 2 && !s_mounted; ++oneBit)
+        for (int fi = 0; fi < 3 && !s_mounted; ++fi)
             if (mount_once(oneBit != 0, kFreq[fi], false)) {
                 s_mounted = true; s_width = oneBit ? 1 : 4;
+                s_freqKhz = kFreq[fi];
             }
 
     if (s_mounted) {
         s_size = s_card ? (uint64_t)s_card->csd.capacity * s_card->csd.sector_size : 0;
-        snprintf(s_status, sizeof(s_status), "%u-bit %llu MB",
-                 (unsigned)s_width, (unsigned long long)(s_size / (1024ULL * 1024ULL)));
+        snprintf(s_status, sizeof(s_status), "%u-bit %dMHz %llu MB",
+                 (unsigned)s_width, s_freqKhz / 1000,
+                 (unsigned long long)(s_size / (1024ULL * 1024ULL)));
         Serial.printf("[sd] mounted, %s\n", s_status);
         mkdir(SD_DIR, 0777);
         idx_build();
