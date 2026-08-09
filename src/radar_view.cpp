@@ -622,8 +622,12 @@ static void layout_labels(void) {
     const lv_coord_t rGlass = (lv_coord_t)(SCREEN_W / 2 - 3);
     const int32_t UNPLACEABLE = 1 << 28;
 
-    lv_area_t placed[28];
-    int nPlaced = 0;
+    // Seeded with the airport idents already on screen, so aircraft labels treat them as
+    // obstacles exactly like each other and like the chrome. Without this the two layers
+    // overprinted -- "SWA1956" straight through an airport code -- which only became
+    // common once the marker list admitted every field with a runway.
+    lv_area_t placed[56];
+    int nPlaced = airports_label_boxes(placed, 24);
 
     for (AcDraw &ac : s_acs) {
         if (!ac.inRange || ac.lblW <= 0) continue;

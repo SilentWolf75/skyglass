@@ -14,6 +14,12 @@ void airports_project(double homeLat, double homeLon, double rangeKm,
 void airports_draw(lv_draw_ctx_t *ctx, lv_color_t color, lv_opa_t opa,
                    lv_color_t labelColor, lv_opa_t labelOpa);
 
+// The rectangles airports_draw() will put idents in, so other layers can route around
+// them. Aircraft labels and airport idents were overprinting each other once the marker
+// list grew to include every field with a runway -- there are simply far more idents on
+// screen now. Mirrors the draw logic exactly, including which airports get labelled.
+int airports_label_boxes(lv_area_t *out, int max);
+
 // Find the nearest recognizable airport (one with an IATA code). Used by the
 // weather view for aviation context; entirely offline from the embedded data.
 bool airports_nearest_iata(double lat, double lon, float maxKm,

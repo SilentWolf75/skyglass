@@ -77,6 +77,23 @@ void airports_draw(lv_draw_ctx_t *ctx, lv_color_t color, lv_opa_t opa,
     }
 }
 
+int airports_label_boxes(lv_area_t *out, int max) {
+    if (!out || max <= 0) return 0;
+    // Same condition as the draw, or the boxes would describe labels that are not there.
+    const bool labelAll = (s_apts.size() <= APT_LABEL_ALL_MAX);
+    int n = 0;
+    for (const Apt &ap : s_apts) {
+        if (n >= max) break;
+        if (!ap.iata[0] || !(ap.large || labelAll)) continue;
+        out[n].x1 = (lv_coord_t)(ap.pos.x + 5);
+        out[n].y1 = (lv_coord_t)(ap.pos.y - 7);
+        out[n].x2 = (lv_coord_t)(ap.pos.x + 52);
+        out[n].y2 = (lv_coord_t)(ap.pos.y + 7);
+        ++n;
+    }
+    return n;
+}
+
 bool airports_nearest_iata(double lat, double lon, float maxKm,
                            char iata[6], float *distKm, float *bearingDeg) {
     if (iata) iata[0] = 0;
