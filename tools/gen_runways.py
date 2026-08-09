@@ -8,17 +8,21 @@ Keeps every runway that is not closed and carries both threshold coordinates. On
 about 15k of the ~48k rows have coordinates at all; the rest are known runways with no
 surveyed endpoints, and there is nothing to draw for those.
 
-Deliberately NOT keyed to airports_data.h. Tying the two together by index would mean
-regenerating both from the same snapshot every time, and the two files already disagree
-by one airport because the upstream dataset moved between generations. Absolute
-endpoints stand on their own and cannot drift out of alignment.
+Restricted to airports that airports_data.h also carries, using the same filter, because
+a runway with no marker and no ident beside it is an unidentifiable smudge - which is
+exactly what showed up on screen when this took every airport in the dataset. The two
+files share a membership test at generation time only; there is no index coupling at
+runtime, so they cannot drift out of alignment the way parallel arrays would.
+
+Generate both from one snapshot of the OurAirports data, or an airport added on one side
+and missing on the other reintroduces the unnamed-runway bug for that field.
 
 No length filter: a 2,000 ft GA strip is exactly the thing a local scope should show.
 The renderer drops runways whose projected length is under a few pixels, which is the
 right place to make that judgement because it depends on the range setting.
 
 Usage:
-    python3 tools/gen_runways.py /tmp/runways.csv src/runways_data.h
+    python3 tools/gen_runways.py /tmp/runways.csv src/runways_data.h /tmp/airports.csv
 
 Source data: OurAirports (public domain). https://ourairports.com/data/
 """
@@ -31,12 +35,41 @@ SCALE = 10000.0
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else "/tmp/runways.csv"
     dst = sys.argv[2] if len(sys.argv) > 2 else "src/runways_data.h"
+    apt = sys.argv[3] if len(sys.argv) > 3 else "/tmp/airports.csv"
+
+    # Same filter as gen_airports.py, matched on `ident` because that is what runways.csv
+    # keys on (the display code is IATA for large fields, which would not match).
+    keep = set()
+    with open(apt, newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            t = r["type"]
+            iata = (r.get("iata_code") or "").strip().upper()
+            gps = (r.get("gps_code") or "").strip().upper()
+            local = (r.get("local_code") or "").strip().upper()
+            if t == "large_airport":
+                large = 1
+            elif t in ("medium_airport", "small_airport") and iata:
+                large = 0
+            else:
+                continue
+            code = (iata or gps or local) if large else (gps or local or iata)
+            if not code[:5]:
+                continue
+            try:
+                float(r["latitude_deg"]); float(r["longitude_deg"])
+            except (ValueError, KeyError):
+                continue
+            ident = (r.get("ident") or "").strip().upper()
+            if ident:
+                keep.add(ident)
 
     rows = []
     with open(src, newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
             if (r.get("closed") or "").strip() == "1":
                 continue
+            if (r.get("airport_ident") or "").strip().upper() not in keep:
+                continue   # no marker for it, so its runways would be unlabelled
             try:
                 le_lat = float(r["le_latitude_deg"])
                 le_lon = float(r["le_longitude_deg"])
@@ -73,6 +106,7 @@ def main():
                 f.write("  " + ",".join(str(r[col]) for r in rows[i:i + 12]) + ",\n")
             f.write("};\n\n")
 
+    print("airports with markers: %d" % len(keep))
     print("runways: %d" % len(rows))
     print("flash:   ~%.1f KB" % (len(rows) * 16 / 1024.0))
     print("written: %s" % dst)

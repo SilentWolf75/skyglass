@@ -107,15 +107,17 @@ need a third-party account are off until a key is entered on the config page.
 
 ## Runway outlines
 Each airport also draws its actual runways, from the OurAirports thresholds
-(`tools/gen_runways.py` -> `src/runways_data.h`): 14,847 runways, ~232 KB. Both ends are
+(`tools/gen_runways.py` -> `src/runways_data.h`): 7,888 runways, ~123 KB. Both ends are
 projected independently rather than deriving one from a heading and a length, so a strip
 lies on its real bearing at its real length - KIXD reads as its 04/22 and 18/36 rather
 than a dot.
 
-Deliberately not keyed to `airports_data.h`. Linking the two by index would mean
-regenerating both from one snapshot every time, and they already disagreed by one airport
-because the upstream data moved between generations; absolute endpoints cannot drift out
-of alignment. Runways follow the airports toggle, draw under the markers so the ident
+Restricted to airports the marker list also carries. Taking every airport in the dataset
+drew strips at fields with no marker and no ident beside them - an unidentifiable smudge
+on the scope, which is what it looked like. The two files share a membership test at
+generation time only, so there is no runtime index coupling to drift; but they must be
+generated from one snapshot, or an airport present on one side and not the other brings
+the unnamed runway back for that field. Runways follow the airports toggle, draw under the markers so the ident
 stays readable, and are dropped during projection once their projected length falls under
 5 px - zoomed out they are smudges around a dot that is already there.
 
