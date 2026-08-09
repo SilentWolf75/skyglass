@@ -1,10 +1,12 @@
 #include "sd_store.h"
 #include "config.h"
-#include <Arduino.h>
 #include <string.h>
 #include <stdio.h>
 
+// Arduino.h lives inside the guard: the simulator builds this file too (ui.cpp asks the
+// log for an aircraft's history) and there is no Arduino there, only the stubs below.
 #if BOARD_HAS_SD
+#include <Arduino.h>
 #include <driver/sdmmc_host.h>
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
