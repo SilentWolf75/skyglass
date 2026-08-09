@@ -122,6 +122,16 @@ static void idx_build(void) {
     Serial.printf("[sd] flight log: %u airframes on file\n", (unsigned)s_idxLen);
 }
 
+// Disabled, and not because of the card. On this board the ESP32-C6 radio is attached
+// over SDIO, and sdmmc_host_init()/deinit() act on the whole SDMMC peripheral rather than
+// one slot -- so any mount attempt fights the host the WiFi link is running on, and a
+// teardown kills the link outright. That is what froze the board with the slot empty.
+//
+// Re-enabling this means driving slot 0 by hand on the already-running host
+// (sdmmc_host_init_slot + sdmmc_card_init) and never calling the global init or deinit.
+// Until that exists, every entry point refuses rather than risking the radio.
+#define SD_HOST_SHARED_WITH_C6 1
+
 static bool mount_once(bool oneBit, int freqKhz, bool formatIfFailed) {
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_0;
@@ -183,6 +193,10 @@ static bool mount_once(bool oneBit, int freqKhz, bool formatIfFailed) {
 
 bool sd_begin(void) {
     if (s_mounted) return true;
+#if SD_HOST_SHARED_WITH_C6
+    snprintf(s_status, sizeof(s_status), "unavailable (SDMMC shared with C6 WiFi)");
+    return false;
+#endif
 
     // Crash-loop guard. Bringing the card up put the board in a boot loop the first time
     // it met a real card: the mounted-card path had only ever been exercised with an
@@ -252,6 +266,10 @@ const char *sd_status(void)     { return s_status; }
 uint32_t    sd_seen_records(void) { return s_idxLen; }
 
 bool sd_format(void) {
+#if SD_HOST_SHARED_WITH_C6
+    Serial.println("[sd] format refused: the SDMMC host belongs to the C6 WiFi link");
+    return false;
+#endif
     Serial.println("[sd] formatting card");
     if (!s_mounted) {
         // The case that matters: a card this device cannot read. Mounting with
