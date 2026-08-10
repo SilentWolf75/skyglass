@@ -46,7 +46,8 @@
 #include <ESPmDNS.h>                // http://<board hostname>.local
 #include <ArduinoOTA.h>             // OTA firmware update over WiFi (PlatformIO/espota)
 #include <Update.h>                 // browser OTA: self-flash an uploaded .bin
-#include <esp_heap_caps.h>          // largest-free-block metric (heap health)
+#include <esp_heap_caps.h>
+#include <esp_rom_sys.h>   // reaches the wire when Serial does not          // largest-free-block metric (heap health)
 #include <esp_wifi.h>               // WiFi driver control (reset must survive the reboot)
 #include <nvs.h>                    // erase the driver's "nvs.net80211" namespace (WiFi reset)
 
@@ -234,21 +235,23 @@ static void adsb_task(void*) {
         // of recovering. Reassociating is the only intermediate step that is known to
         // return, so it is the only one kept.
         if (!conn) {
-            if (healStage == 0) {
-                lastFeedOk = millis();          // plain outage: a router reboot must not
-                                                // eventually restart the device
-            } else if (millis() - healActionMs > 60000UL) {
-                // We prodded the radio and it has not come back for a minute. An
-                // unreachable device cannot be recovered remotely, so take the reboot.
-                Serial.println("[adsb] no association since self-heal -> rebooting");
-                delay(100);
-                ESP.restart();
-            }
+            // Being disconnected simply re-arms the stall clock. There used to be a branch
+            // here that rebooted if the station had not re-associated within a minute of a
+            // heal action. It was added to stop rung 2 -- a full station teardown -- from
+            // leaving the board stranded; rung 2 was then removed when it proved it never
+            // came back, and this guard outlived its reason. WiFi.reconnect() cannot strand
+            // anything, so all the guard did was reboot the board whenever a reassociation
+            // took longer than sixty seconds, which over esp_hosted is ordinary. That was
+            // the reboot every few minutes, confirmed by the reset label on the wire.
+            lastFeedOk = millis();
+            healStage = 0;
+            healActionMs = 0;
         } else {
             const uint32_t stuckMs = millis() - lastFeedOk;
             if (stuckMs > 180000UL) {
                 Serial.println("[adsb] feed stuck >180s after reassociating -> rebooting");
                 delay(100);
+                esp_rom_printf("\n*** RESTART: feed stuck >180s after reassociating ***\n");
                 ESP.restart();
             } else if (stuckMs > 45000UL && healStage < 1) {
                 // Cheapest rung: reassociate. Costs a second or two of link and nothing
@@ -1130,6 +1133,7 @@ static void handleSave() {
         "<meta http-equiv=refresh content='4;url=/'><body style='background:#06100a;color:#1dff86;"
         "font-family:sans-serif;padding:24px'>Saved. Restarting&hellip;</body>");
     delay(400);
+    esp_rom_printf("\n*** RESTART: settings saved ***\n");
     ESP.restart();
 }
 
@@ -1177,6 +1181,7 @@ static void handleWifi() {
         nvs_close(h);
     }
     delay(300);                     // let NVS finish committing before the reboot
+    esp_rom_printf("\n*** RESTART: wifi credentials saved ***\n");
     ESP.restart();
 }
 
@@ -2008,6 +2013,7 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
             const bool ok = !Update.hasError();
             g_web.send(200, "text/plain", ok ? "OK" : "FAIL");
             delay(800);
+            esp_rom_printf("\n*** RESTART: firmware update installed ***\n");
             if (ok) ESP.restart();
         },
         handleUpdateUpload);
@@ -2035,6 +2041,7 @@ static void pollSerialConfig() {
     p.end();
     Serial.printf("[wifi] stored SSID '%s'; rebooting\n", ss.c_str());
     delay(300);
+    esp_rom_printf("\n*** RESTART: scheduled reboot request ***\n");
     ESP.restart();
 }
 

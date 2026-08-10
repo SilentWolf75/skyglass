@@ -96,7 +96,7 @@
    printed is diagnosable, a frozen one is not. Note it takes a reboot either way -- a
    frozen board needs the plug pulled. */
 #define LV_ASSERT_HANDLER_INCLUDE "lv_assert_hook.h"
-#define LV_ASSERT_HANDLER   do { fflush(stdout); esp_restart(); } while (0);
+#define LV_ASSERT_HANDLER   do { esp_rom_printf("\n*** LVGL ASSERT -> restarting ***\n"); fflush(stdout); esp_restart(); } while (0);
 #else
 #define LV_ASSERT_HANDLER_INCLUDE <stdio.h>
 /* LVGL logs the failing assert (LV_LOG_PRINTF) just before calling this, so the flush is

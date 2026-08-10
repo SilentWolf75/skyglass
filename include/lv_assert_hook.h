@@ -7,3 +7,9 @@
 // below do the same job and compile in both languages.
 #include <stdio.h>
 #include <esp_system.h>
+#include <esp_rom_sys.h>
+
+// esp_rom_printf goes straight at the UART with no buffering and no heap, so it
+// survives whatever state LVGL is in when it gives up. Plain printf did not: the
+// board was resetting with nothing on the wire at all, which made an assert look
+// identical to a spontaneous reboot.
