@@ -71,7 +71,20 @@ static_assert(sizeof(SeenRec) == 32, "SeenRec must stay 32 bytes: offsets depend
 // unknown and got appended again. Holding the hex in RAM makes the check exact, immune to
 // write visibility, and free. 16 bytes an airframe: 320 KB of PSRAM at 20k, which the P4
 // has in abundance and its internal heap does not.
-struct IdxEnt { uint32_t h; uint32_t rec; char hex[8]; };
+struct IdxEnt {
+    uint32_t h;
+    uint32_t rec;
+    char     hex[8];
+    uint32_t lastWrite;    // epoch when this record was last pushed to the card
+};
+
+// How stale a record may get before it is written back. The card and the ESP32-C6 radio
+// share one SDMMC controller (the C6 is an SDIO device on the other slot), and hammering
+// it drowned the link: the driver logged "handle_idle_state_events unhandled" continuously
+// and the feed went stale until the self-heal rebooted the board every few minutes. This
+// used to do a read and a write per aircraft per poll -- around forty file operations a
+// second, for data that only has to survive a power cut.
+#define SD_WRITEBACK_S 120
 static IdxEnt  *s_idx = nullptr;
 static uint32_t s_idxLen = 0, s_idxCap = 0;
 // Records in the file, tracked in RAM. Neither ftell() before the write nor stat()
@@ -134,12 +147,14 @@ static bool rec_read(uint32_t rec, SeenRec *out) {
 
 // Find the record for a hex, or UINT32_MAX. Collisions on the 32-bit hash are possible,
 // so every candidate is confirmed against the stored hex before being accepted.
-static uint32_t rec_lookup(const char *hex) {
+static uint32_t rec_lookup(const char *hex, uint32_t *slot = nullptr) {
     if (!s_idx) return UINT32_MAX;
     const uint32_t h = hex_hash(hex);
     for (uint32_t i = idx_find_pos(h); i < s_idxLen && s_idx[i].h == h; ++i)
-        if (strncmp(s_idx[i].hex, hex, sizeof(s_idx[i].hex)) == 0)
+        if (strncmp(s_idx[i].hex, hex, sizeof(s_idx[i].hex)) == 0) {
+            if (slot) *slot = i;
             return s_idx[i].rec;
+        }
     return UINT32_MAX;
 }
 
@@ -160,6 +175,7 @@ static void idx_build(void) {
             s_idx[s_idxLen].h = hex_hash(buf[i].hex);
             s_idx[s_idxLen].rec = rec;
             memcpy(s_idx[s_idxLen].hex, buf[i].hex, sizeof(s_idx[s_idxLen].hex));
+            s_idx[s_idxLen].lastWrite = buf[i].lastSeen;
             ++s_idxLen;
         }
     }
@@ -561,10 +577,19 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
     const uint16_t dam = (distKm > 0.0f && distKm < 650.0f)
                              ? (uint16_t)(distKm * 100.0f)   // km -> units of 10 m
                              : 0;
-    const uint32_t rec = rec_lookup(hex);
+    uint32_t slot = UINT32_MAX;
+    const uint32_t rec = rec_lookup(hex, &slot);
 
     if (rec != UINT32_MAX) {
         ++s_hits;
+        // Between polls nothing meaningful changes: the same aircraft is simply still
+        // overhead. Touch the card only when the record has gone stale or a new visit has
+        // begun -- that is what keeps the SDMMC bus free for the radio sharing it.
+        const bool newVisit = (nowEpoch && slot != UINT32_MAX && s_idx[slot].lastWrite &&
+                               nowEpoch - s_idx[slot].lastWrite > SD_VISIT_GAP_S);
+        const bool stale = (nowEpoch && slot != UINT32_MAX &&
+                            nowEpoch - s_idx[slot].lastWrite >= SD_WRITEBACK_S);
+        if (!newVisit && !stale) return;
         SeenRec r;
         if (!rec_read(rec, &r)) return;
         // A contact that drops off the feed for a moment is the same visit; only a real
@@ -578,6 +603,7 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
         if (!f) return;
         if (fseek(f, (long)rec * (long)sizeof(SeenRec), SEEK_SET) == 0) fwrite(&r, sizeof(r), 1, f);
         fclose(f);
+        if (slot != UINT32_MAX && nowEpoch) s_idx[slot].lastWrite = nowEpoch;
         return;
     }
 
@@ -610,6 +636,7 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
     memmove(&s_idx[at + 1], &s_idx[at], (size_t)(s_idxLen - at) * sizeof(IdxEnt));
     s_idx[at].h = h; s_idx[at].rec = newRec;
     memcpy(s_idx[at].hex, r.hex, sizeof(s_idx[at].hex));
+    s_idx[at].lastWrite = nowEpoch;
     ++s_idxLen;
 }
 
