@@ -2,6 +2,7 @@
 #include "config.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>   // qsort
 
 // Arduino.h lives inside the guard: the simulator builds this file too (ui.cpp asks the
 // log for an aircraft's history) and there is no Arduino there, only the stubs below.
@@ -75,7 +76,7 @@ struct IdxEnt {
     uint32_t h;
     uint32_t rec;
     char     hex[8];
-    uint32_t lastWrite;    // epoch when this record was last pushed to the card
+    uint32_t lastWriteMs;  // millis() when this record was last pushed to the card
 };
 
 // How stale a record may get before it is written back. The card and the ESP32-C6 radio
@@ -160,6 +161,11 @@ static uint32_t rec_lookup(const char *hex, uint32_t *slot = nullptr) {
 
 // One pass over the file at mount time. Cheaper than any alternative: a 20k-airframe log
 // is 640 KB, read once in about a second, and every lookup afterwards is a binary search.
+static int idx_cmp(const void *pa, const void *pb) {
+    const uint32_t x = ((const IdxEnt *)pa)->h, y = ((const IdxEnt *)pb)->h;
+    return (x < y) ? -1 : (x > y) ? 1 : 0;
+}
+
 static void idx_build(void) {
     s_idxLen = 0;
     FILE *f = fopen(SD_SEEN, "rb");
@@ -175,19 +181,17 @@ static void idx_build(void) {
             s_idx[s_idxLen].h = hex_hash(buf[i].hex);
             s_idx[s_idxLen].rec = rec;
             memcpy(s_idx[s_idxLen].hex, buf[i].hex, sizeof(s_idx[s_idxLen].hex));
-            s_idx[s_idxLen].lastWrite = buf[i].lastSeen;
+            s_idx[s_idxLen].lastWriteMs = millis();
             ++s_idxLen;
         }
     }
     fclose(f);
     s_fileRecs = rec;            // total records in the file, holes included
-    // insertion-sort-free: sort once by hash
-    for (uint32_t i = 1; i < s_idxLen; ++i) {
-        const IdxEnt k = s_idx[i];
-        uint32_t j = i;
-        while (j && s_idx[j - 1].h > k.h) { s_idx[j] = s_idx[j - 1]; --j; }
-        s_idx[j] = k;
-    }
+    // Sort by hash so lookups can binary search. This was an insertion sort under a
+    // comment claiming it was not one: O(n^2), which is milliseconds at a thousand
+    // airframes and roughly 200 million operations at the twenty thousand this is sized
+    // for -- long enough to trip the task watchdog while mounting the card.
+    qsort(s_idx, s_idxLen, sizeof(IdxEnt), idx_cmp);
     Serial.printf("[sd] flight log: %u airframes on file\n", (unsigned)s_idxLen);
 }
 
@@ -585,16 +589,30 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
         // Between polls nothing meaningful changes: the same aircraft is simply still
         // overhead. Touch the card only when the record has gone stale or a new visit has
         // begun -- that is what keeps the SDMMC bus free for the radio sharing it.
-        const bool newVisit = (nowEpoch && slot != UINT32_MAX && s_idx[slot].lastWrite &&
-                               nowEpoch - s_idx[slot].lastWrite > SD_VISIT_GAP_S);
-        const bool stale = (nowEpoch && slot != UINT32_MAX &&
-                            nowEpoch - s_idx[slot].lastWrite >= SD_WRITEBACK_S);
-        if (!newVisit && !stale) return;
+        // Throttle on millis(), not the wall clock. Two reasons, both bugs the epoch
+        // version had: before NTP lands nowEpoch is 0, so every existing airframe was
+        // skipped entirely and nothing was recorded at all; and if the clock ever runs
+        // backwards of a stored stamp the unsigned subtraction wraps to ~4.2 billion,
+        // which is >= any threshold, so "stale" is true forever and the card gets
+        // hammered on every poll -- the exact flooding the throttle exists to stop.
+        // millis() is monotonic, always available, and its wrap is safe under unsigned
+        // subtraction.
+        const uint32_t nowMs = millis();
+        const bool stale = (slot == UINT32_MAX) ||
+                           (nowMs - s_idx[slot].lastWriteMs >= SD_WRITEBACK_S * 1000UL);
+        // Visit counting needs no separate check here: the record is read below anyway,
+        // and the count is bumped from its own lastSeen. Probing for it first would just
+        // be an extra card read of exactly the kind this throttle exists to avoid.
+        if (!stale) return;
         SeenRec r;
         if (!rec_read(rec, &r)) return;
         // A contact that drops off the feed for a moment is the same visit; only a real
         // gap counts as coming round again.
-        if (nowEpoch && r.lastSeen && nowEpoch - r.lastSeen > SD_VISIT_GAP_S && r.count < 0xFFFF)
+        // nowEpoch > r.lastSeen guards the same unsigned wrap as the throttle above: a
+        // clock that reads behind a stored stamp would otherwise look like a 130-year gap
+        // and bump the visit count on every write.
+        if (nowEpoch && r.lastSeen && nowEpoch > r.lastSeen &&
+            nowEpoch - r.lastSeen > SD_VISIT_GAP_S && r.count < 0xFFFF)
             r.count++;
         if (nowEpoch) r.lastSeen = nowEpoch;
         if (dam && (!r.closestDam || dam < r.closestDam)) r.closestDam = dam;
@@ -603,7 +621,7 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
         if (!f) return;
         if (fseek(f, (long)rec * (long)sizeof(SeenRec), SEEK_SET) == 0) fwrite(&r, sizeof(r), 1, f);
         fclose(f);
-        if (slot != UINT32_MAX && nowEpoch) s_idx[slot].lastWrite = nowEpoch;
+        if (slot != UINT32_MAX) s_idx[slot].lastWriteMs = millis();
         return;
     }
 
@@ -622,6 +640,12 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
     // appended record failed to read back, so each contact was re-appended on every poll
     // while the file grew 32 bytes a time. stat() after close is the authoritative
     // answer and does not depend on how this FATFS treats seek and tell in append mode.
+    // Reserve the index slot BEFORE writing. The other order put a record on the card
+    // that the index did not know about whenever the allocation failed, so the next poll
+    // looked the aircraft up, missed, and appended it again -- an unbounded append loop
+    // under low memory, and the same shape of bug that cost a day earlier.
+    if (!idx_reserve(s_idxLen + 1)) return;
+
     const uint32_t newRec = s_fileRecs;      // where this one is about to land
     FILE *f = fopen(SD_SEEN, "ab");
     if (!f) return;
@@ -629,14 +653,13 @@ void sd_log_seen(const char *hex, const char *callsign, float distKm, uint32_t n
     fclose(f);
     if (!wrote) return;
     ++s_fileRecs;
-    if (!idx_reserve(s_idxLen + 1)) return;
 
     const uint32_t h = hex_hash(r.hex);
     const uint32_t at = idx_find_pos(h);
     memmove(&s_idx[at + 1], &s_idx[at], (size_t)(s_idxLen - at) * sizeof(IdxEnt));
     s_idx[at].h = h; s_idx[at].rec = newRec;
     memcpy(s_idx[at].hex, r.hex, sizeof(s_idx[at].hex));
-    s_idx[at].lastWrite = nowEpoch;
+    s_idx[at].lastWriteMs = millis();
     ++s_idxLen;
 }
 

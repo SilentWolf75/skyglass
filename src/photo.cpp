@@ -70,6 +70,18 @@ void photo_commit(int w, int h, const char *hex, const char *credit) {
     s_ready = (w > 0 && h > 0);
 }
 
+// Called on the network task the instant the decoder starts writing into the shared
+// buffer. There is only one buffer for every aircraft, and s_doneHex still names the
+// PREVIOUS aircraft until photo_commit() runs at the end of the decode -- so without
+// this, tapping back to that previous aircraft mid-decode makes photo_get() succeed and
+// LVGL renders half-written pixels of a different airframe. Clearing s_ready alone is
+// enough: photo_get() tests it first. s_doneHex is deliberately left intact so
+// photo_done() still reports the fetch as finished and nothing re-requests in a loop.
+void photo_invalidate(void) {
+    std::lock_guard<std::mutex> g(s_m);
+    s_ready = false;
+}
+
 bool photo_get(const char *hex, int *w, int *h, char *credit, size_t cn) {
     std::lock_guard<std::mutex> g(s_m);
     if (hex && s_ready && s_doneHex[0] && strcmp(hex, s_doneHex) == 0) {

@@ -14,6 +14,9 @@ void photo_commit(int w, int h, const char *hex, const char *credit);  // ready 
 // cached like a success so it is not asked for again. Without the distinction one
 // flaky download made an aircraft permanently photo-less for the session.
 void photo_fail(const char *hex, bool transient);
+// Mark the shared buffer as being rewritten; photo_get() will refuse until the next
+// photo_commit(). Must be called before the decoder writes a single pixel.
+void photo_invalidate(void);
 bool photo_get(const char *hex, int *w, int *h, char *credit, size_t cn);  // ready & matches?
 bool photo_done(const char *hex);                    // fetch finished for this hex (with or without a photo)
 

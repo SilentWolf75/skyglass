@@ -47,7 +47,8 @@
 #include <ArduinoOTA.h>             // OTA firmware update over WiFi (PlatformIO/espota)
 #include <Update.h>                 // browser OTA: self-flash an uploaded .bin
 #include <esp_heap_caps.h>
-#include <esp_rom_sys.h>   // reaches the wire when Serial does not          // largest-free-block metric (heap health)
+#include <esp_rom_sys.h>   // reaches the wire when Serial does not
+#include <esp_task_wdt.h>  // turn a loop-task freeze into a backtrace and a reboot          // largest-free-block metric (heap health)
 #include <esp_wifi.h>               // WiFi driver control (reset must survive the reboot)
 #include <nvs.h>                    // erase the driver's "nvs.net80211" namespace (WiFi reset)
 
@@ -74,7 +75,13 @@ static float                 g_proximityKm = 0.0f;                   // proximit
 static uint32_t              g_idleDimMs = IDLE_DIM_MS;              // dim after this idle time (0 = never)
 static bool                  g_showSweep = true;                     // rotating sweep line on/off (web/NVS)
 static int                   g_units = 0;                            // 0=Aviation 1=Metric 2=Imperial (web/NVS)
-static bool                  g_showAirports = true;                  // airport markers on/off (web/NVS)
+static bool                  g_showAirports = true;
+#if BOARD_HAS_SD
+// The card shares the SDMMC controller with the C6 radio, so it is worth being able
+// to turn it off without reflashing. On by default: the log and the photo cache are
+// the reason the slot is used at all.
+static bool                  g_sdEnabled = true;
+#endif                  // airport markers on/off (web/NVS)
 static bool                  g_hideGround   = false;                 // skip on-ground aircraft in the feed (web/NVS)
 static int                   g_minAltFt     = 0;                     // only show aircraft above this altitude, ft (0 = off) (web/NVS)
 static bool                  g_milOnly      = false;                 // only show military-flagged aircraft (web/NVS)
@@ -942,6 +949,9 @@ static void handleRoot() {
         // needless chance to desync the placeholders from the values.
         "<div class=card><div class=t>Flight log (microSD)</div>"
         "<div id=sdi style='font-size:14px;margin-bottom:8px'>Checking the card&hellip;</div>"
+        "<label><input type=checkbox class=ck id=sden onchange='se(this.checked)'>Use the microSD card</label>"
+        "<div style='font-size:12px;opacity:.6;margin:-2px 0 8px'>Turn off for a radar that never "
+        "touches the card. Takes effect after a restart.</div>"
         "<div style='font-size:12px;opacity:.6;margin-bottom:2px'>The radar remembers every "
         "aircraft it has seen and how many times each one has been over. Tap a contact on "
         "the scope to see its history.</div>"
@@ -1057,11 +1067,15 @@ static void handleRoot() {
         "function ls(v){fetch('/adsblocal?m='+v)}"
         "function mb(c){fetch('/map?v='+(c?1:0)+'&save=1')}"
 #if BOARD_HAS_SD
+        "function se(c){fetch('/sdenable?v='+(c?1:0)).then(r=>r.text()).then(t=>alert('microSD '+t))}"
+#endif
+#if BOARD_HAS_SD
         // Fill the flight-log card's status line from /diag rather than printf-ing it
         // into the page: this page is one big format string and the fewer placeholders
         // it carries, the fewer ways it can desync from its argument list.
         "fetch('/diag').then(r=>r.json()).then(d=>{var e=document.getElementById('sdi');"
-        "if(!e)return;var s=d.sd||'',p=s.split(' ');"
+        "if(!e)return;var cb=document.getElementById('sden');if(cb)cb.checked=!!d.sd_on;"
+        "var s=d.sd||'',p=s.split(' ');"
         "if(p.length>3&&p[3]=='MB'){var gb=Math.round(p[2]/1024);"
         "e.innerHTML='<b style=color:#1dff86>Card ready</b> &mdash; '+gb+' GB, '+d.sd_recs+"
         "' aircraft remembered<div style=font-size:11px;opacity:.45;margin-top:2px>connected '"
@@ -1356,6 +1370,21 @@ static void handleMaxAc() {   // max aircraft drawn on the scope (live)
     }
     g_web.send(200, "text/plain", "ok");
 }
+
+#if BOARD_HAS_SD
+static void handleSdEnable() {   // turn the card (flight log + photo cache) on or off
+    if (g_web.hasArg("v")) {
+        g_sdEnabled = g_web.arg("v").toInt() != 0;
+        Preferences p;
+        p.begin("capsuleradar", false);
+        p.putBool("sdenable", g_sdEnabled);
+        p.end();
+    }
+    // Deliberately restart-scoped rather than live: unmounting a volume out from under
+    // two tasks mid-flight is how this subsystem caused trouble in the first place.
+    g_web.send(200, "text/plain", g_sdEnabled ? "on (restart to apply)" : "off (restart to apply)");
+}
+#endif
 
 static void handleAirports() {   // show/hide airport markers (live)
     if (g_web.hasArg("v")) {
@@ -1761,6 +1790,22 @@ void setup() {
 
     // Mount before loadSettings(): the default sound pack depends on whether a custom
     // sound exists, and an uploaded one only becomes visible once the filesystem is up.
+    // Task watchdog on the loop task. A hang here -- LVGL and the web server both live
+    // on it -- is otherwise invisible and permanent: the board answers ping because lwIP
+    // keeps running, serves nothing, prints nothing, and needs the plug pulled. With this
+    // the same hang panics with a backtrace naming the function it stuck in, and reboots.
+    // Thirty seconds is far longer than any legitimate iteration; the point is to catch a
+    // block that never returns, not a slow frame.
+    {
+        esp_task_wdt_config_t wdt = {};
+        wdt.timeout_ms = 30000;
+        wdt.idle_core_mask = 0;            // only this task; idle tasks are not the worry
+        wdt.trigger_panic = true;          // panic prints the backtrace, then resets
+        if (esp_task_wdt_init(&wdt) == ESP_ERR_INVALID_STATE) esp_task_wdt_reconfigure(&wdt);
+        esp_task_wdt_add(NULL);            // setup() runs on the loop task
+        esp_rom_printf("[wdt] loop task watchdog armed (30s)\n");
+    }
+
     if (!LittleFS.begin(true)) Serial.println("[fs] LittleFS mount failed (uploads unavailable)");
     else audio_load_sample();   // restore a previously uploaded alert sound
     // SD is probed from loop() a few seconds in, not here. Nothing depends on it, and
@@ -1786,6 +1831,9 @@ void setup() {
         const int t = p.getInt("theme", THEME_PHOSPHOR);
         g_showSweep = p.getBool("sweep", true);
         g_showAirports = p.getBool("airports", true);
+#if BOARD_HAS_SD
+    g_sdEnabled = p.getBool("sdenable", true);
+#endif
         g_hideGround = p.getBool("hideground", false);
         g_minAltFt = p.getInt("minalt", 0);
         g_milOnly = p.getBool("milonly", false);
@@ -1934,6 +1982,9 @@ void setup() {
     g_web.on("/ais", handleAis);
     g_web.on("/adsblocal", handleAdsbLocal);
 #if BOARD_HAS_SD
+    g_web.on("/sdenable", handleSdEnable);
+#endif
+#if BOARD_HAS_SD
     g_web.on("/sdretry", []() {       // re-arm after a probe crash and try again
         sd_clear_crash_flag();
         g_web.send(200, "text/plain", sd_begin() ? sd_status() : sd_status());
@@ -1979,7 +2030,7 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
                  "\"feed_cap\":%d,\"lv_free\":%u,\"lv_pct\":%u,"
                  "\"lv_biggest\":%u,\"lv_frag\":%u,"
                  "\"lbl_us\":%u,\"lbl_moves\":%u,\"lbl_seen\":%u,"
-                 "\"sd\":\"%s\",\"sd_recs\":%u,\"sd_hit\":%u,\"sd_app\":%u,\"sd_rderr\":%u,\"sd_photos\":%u,\"photo\":\"%s\","
+                 "\"sd\":\"%s\",\"sd_recs\":%u,\"sd_hit\":%u,\"sd_app\":%u,\"sd_rderr\":%u,\"sd_photos\":%u,\"sd_on\":%u,\"photo\":\"%s\","
                  "\"fps\":%.1f,\"draw_us\":%u,\"step_avg\":%.2f,\"step_max\":%.2f,\"frame_ms\":%u,"
                  "\"lvgl_ms\":%.1f,\"rest_ms\":%.1f}",
                  FW_VERSION, (unsigned long)(millis() / 1000),
@@ -1996,6 +2047,11 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
                  (unsigned)lblUs, (unsigned)lblMoves, (unsigned)lblSeen,
                  sd_status(), (unsigned)sd_seen_records(),
                  (unsigned)sdHit, (unsigned)sdApp, (unsigned)sdRdE, (unsigned)sd_photo_count(),
+#if BOARD_HAS_SD
+                 (unsigned)(g_sdEnabled ? 1u : 0u),
+#else
+                 0u,
+#endif
                  photo_note_get(), sfps, sdraw, savg, smax, (unsigned)radar::sweepFrameMs(), g_loopLvglMs, g_loopRestMs);
         g_web.send(200, "application/json", j);
     });
@@ -2067,8 +2123,9 @@ void loop() {
     // the card entirely. Turned back on because the mount has since run repeatedly
     // without disturbing the radio, and a flight log that never starts is no log at all.
     static bool sdProbed = false;
-    if (!sdProbed && millis() > 20000UL) { sdProbed = true; sd_begin(); }
+    if (!sdProbed && millis() > 20000UL) { sdProbed = true; if (g_sdEnabled) sd_begin(); }
 #endif
+    esp_task_wdt_reset();          // loop is alive; see the watchdog set up in setup()
     if (g_rebootAtMs && (int32_t)(millis() - g_rebootAtMs) >= 0) { delay(50); ESP.restart(); }
 
     // OTA: set up once WiFi is up, then service it every loop (flash over the air)

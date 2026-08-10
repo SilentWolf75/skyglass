@@ -192,6 +192,9 @@ static bool decode_and_commit(const char *hex, uint8_t *img, size_t ilen,
     s_dstW = (int)(jw / scale); if (s_dstW > maxW) s_dstW = maxW;
     s_dstH = (int)(jh / scale); if (s_dstH > maxH) s_dstH = maxH;
     s_dst = dst;
+    // From here the shared buffer holds a half-drawn image of THIS aircraft while
+    // s_doneHex still names the previous one. Tell the UI to stop rendering it.
+    photo_invalidate();
     for (int i = 0; i < s_dstW * s_dstH; ++i) s_dst[i].full = 0;   // clear
 
     TJpgDec.setJpgScale(scale);
