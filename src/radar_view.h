@@ -18,7 +18,8 @@ enum RadarTheme {
     THEME_AMBER    = 2,   // amber CRT scope (warm monochrome chrome)
     THEME_MILITARY = 3,   // night-vision / military green scope
     THEME_RED      = 4,   // red CRT: keeps dark adaptation at night
-    THEME_COUNT    = 5
+    THEME_CYAN     = 5,   // cyan / aviation standard scope theme
+    THEME_COUNT    = 6
 };
 
 // Flattened, display-ready info for one aircraft (detail card / list view).
@@ -103,5 +104,48 @@ uint32_t sweepFrameMs(void);      // measured interval between sweep ticks
 void setSweepTuning(float trailDeg, int trailSteps, float maxStepPx);
 void sweepTuning(float *trailDeg, int *trailSteps, float *maxStepPx);
 void setLargeText(bool on);                       // accessibility: bigger glyph labels. Call BEFORE init()
+
+// ---- Radar screen display options ---------------------------------------------------
+// Everything the scope draws per contact is a row in one table (RADAR_OPTS in
+// radar_view.cpp). The settings page, the NVS keys and the on-screen HUD are all
+// generated from it, so adding a new switchable piece of information is one row here
+// plus one `if` in the draw code -- nothing to wire up in the web form by hand.
+enum RadarOpt {
+    ROPT_CALLSIGN = 0,   // flight ID above the glyph
+    ROPT_ALTITUDE,       // altitude / flight level
+    ROPT_VSARROW,        // climb / descent arrow
+    ROPT_SPEED,          // ground speed
+    ROPT_DISTBRG,        // distance + bearing from home
+    ROPT_VECTOR,         // heading prediction line
+    ROPT_VECTOR_TICKS,   // minute ticks along that line
+    ROPT_ALT_GLOW,       // altitude-band halo behind the glyph
+    ROPT_COUNT
+};
+
+struct RadarOptInfo {
+    const char *key;     // NVS key and web form id (keep <= 15 chars for NVS)
+    const char *label;   // shown on the settings page
+    bool        dflt;
+};
+
+const RadarOptInfo &optInfo(int idx);
+bool optEnabled(int idx);
+void setOptEnabled(int idx, bool on);
+// Notified whenever an option changes, including from the on-screen HUD buttons, so the
+// caller can persist it. Without this a toggle made on the device is lost at the next
+// reboot, which is how these behaved before they were table-driven.
+void onOptChanged(void (*cb)(int idx, bool on));
+
+// Named wrappers kept for the on-screen HUD buttons in ui.cpp.
+void setVectorLinesEnabled(bool on);
+bool vectorLinesEnabled();
+void setVectorTicksEnabled(bool on);
+bool vectorTicksEnabled();
+void setAltGlowEnabled(bool on);
+bool altGlowEnabled();
+void setDistBrgLabelEnabled(bool on);
+bool distBrgLabelEnabled();
+void setSpeedAltFormatEnabled(bool on);
+bool speedAltFormatEnabled();
 
 } // namespace radar

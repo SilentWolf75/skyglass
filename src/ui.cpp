@@ -1,6 +1,7 @@
 // M3 UI: tileview (radar / list / stats) + tap-to-inspect detail card.
 // Pure LVGL, portable. Taps hit-test via radar::hitTest; selection lives in radar.
 #include "ui.h"
+#include "units.h"
 #include "radar_view.h"
 #include "route.h"
 #include "photo.h"
@@ -73,6 +74,7 @@ static void set_wx_icon(lv_obj_t *o, int code, bool night) {
 }
 static lv_obj_t *s_card = nullptr, *s_cardTitle = nullptr, *s_cardL = nullptr, *s_cardR = nullptr;
 static lv_obj_t *s_cardRoute = nullptr;
+static lv_obj_t *s_cardHist  = nullptr;   // "seen 3x, closest 0.8 nm" (own row, see below)
 static lv_obj_t *s_cardAirline = nullptr;
 static lv_obj_t *s_vesselCard = nullptr, *s_vesselTitle = nullptr, *s_vesselBody = nullptr;
 static bool      s_vesselShown = false;
@@ -106,7 +108,7 @@ static lv_obj_t *s_fcDayRain[3] = { nullptr, nullptr, nullptr };
 // 0 = Aviation (ft, kt, km) · 1 = Metric (m, km/h, km) · 2 = Imperial (ft, mph, mi).
 // The feed gives altitude in ft, speed in kt, vertical speed in fpm, distance in km.
 static int s_units = 0;
-void ui_set_units(int u) { s_units = (u < 0 || u > 2) ? 0 : u; }
+void ui_set_units(int u) { s_units = (u < 0 || u > 2) ? 0 : u; units_set(s_units); }
 
 // ----------------------------------------------------------------- clock format
 static bool s_time24 = false;
@@ -170,30 +172,15 @@ static const lv_font_t *F16() {
     return s_bigText ? &lv_font_montserrat_20 : &lv_font_montserrat_16;
 }
 
-static void fmt_alt(char *b, size_t n, float ft, bool gnd) {
-    if (gnd)            snprintf(b, n, "GND");
-    else if (s_units == 1) snprintf(b, n, "%.0f m",  ft * 0.3048f);
-    else                snprintf(b, n, "%.0f ft", ft);
-}
-static void fmt_spd(char *b, size_t n, float kt) {
-    if (kt != kt)          snprintf(b, n, "-");
-    else if (s_units == 1) snprintf(b, n, "%.0f km/h", kt * 1.852f);
-    else if (s_units == 2) snprintf(b, n, "%.0f mph",  kt * 1.15078f);
-    else                   snprintf(b, n, "%.0f kt",   kt);
-}
-static void fmt_vs(char *b, size_t n, float fpm) {
-    if (fpm != fpm)        snprintf(b, n, "-");
-    else if (s_units == 1) snprintf(b, n, "%+.1f m/s", fpm * 0.00508f);
-    else                   snprintf(b, n, "%+.0f fpm", fpm);
-}
-static float dist_val(float km) {
-    if (s_units == 0) return km * 0.539957f;   // Aviation -> nautical miles
-    if (s_units == 2) return km * 0.621371f;   // Imperial -> miles
-    return km;                                   // Metric   -> km
-}
-static const char *dist_unit(void) { return s_units == 0 ? "nm" : (s_units == 2 ? "mi" : "km"); }
+// Thin names over units.h -- the conversions themselves are shared with the radar scope,
+// which used to carry its own copy and drifted out of step with these.
+static void fmt_alt(char *b, size_t n, float ft, bool gnd) { units_fmt_alt(b, n, ft, gnd); }
+static void fmt_spd(char *b, size_t n, float kt)           { units_fmt_spd(b, n, kt); }
+static void fmt_vs(char *b, size_t n, float fpm)           { units_fmt_vs(b, n, fpm); }
+static float dist_val(float km)          { return units_dist(km); }
+static const char *dist_unit(void)       { return units_dist_label(); }
 // The weather view's overlays are set in caps to match the aviation-style chrome.
-static const char *dist_unit_caps(void) { return s_units == 0 ? "NM" : (s_units == 2 ? "MI" : "KM"); }
+static const char *dist_unit_caps(void)  { return units_dist_label_caps(); }
 
 // Coverage radius of each imagery product. These are properties of the source data
 // (RainViewer tile span, EUMETSAT crop), so they live in km and convert for display.
@@ -360,35 +347,37 @@ static void refresh_card(void) {
         snprintf(s_lastRouteReq, sizeof(s_lastRouteReq), "%s", in.call);
         route_request(in.call);
     }
-    // How often this airframe has been over before, from the card. Shares the route
-    // line rather than taking one of its own: the card is already dense, and on a board
-    // with no SD there is nothing to say, so a dedicated row would sit empty forever.
+    // How often this airframe has been over before, from the flight log on the card.
+    // Stays empty on a board with no SD, or on a first sighting -- an empty label costs
+    // nothing and the row is shared with the TRACK button, which is always there anyway.
     char hist[40];
     hist[0] = 0;
     {
         SdSeen sn;
         if (in.hex[0] && sd_seen_lookup(in.hex, &sn) && sn.count > 1) {
             if (sn.closestDam)
-                snprintf(hist, sizeof(hist), "  |  seen %ux, closest %.1f nm",
-                         (unsigned)sn.count, (double)sn.closestDam / 100.0 * 0.539957);
+                snprintf(hist, sizeof(hist), "Seen %ux, closest %.1f %s", (unsigned)sn.count,
+                         (double)dist_val((float)sn.closestDam / 100.0f), dist_unit());
             else
-                snprintf(hist, sizeof(hist), "  |  seen %ux", (unsigned)sn.count);
+                snprintf(hist, sizeof(hist), "Seen %ux", (unsigned)sn.count);
         }
     }
     char rfrom[40], rto[40];
     if (!in.call[0]) {
         char rt[140];
-        snprintf(rt, sizeof(rt), "Route -%s", hist);               // no callsign -> nothing to look up
+        snprintf(rt, sizeof(rt), "Route -");                       // no callsign -> nothing to look up
         lv_label_set_text(s_cardRoute, rt);
     } else if (route_get(in.call, rfrom, sizeof(rfrom), rto, sizeof(rto))) {
         char rt[140];
-        if (rfrom[0] || rto[0]) snprintf(rt, sizeof(rt), "%s -> %s%s", rfrom[0] ? rfrom : "?", rto[0] ? rto : "?", hist);
-        else                    snprintf(rt, sizeof(rt), "Route unavailable%s", hist);
+        if (rfrom[0] || rto[0]) snprintf(rt, sizeof(rt), "%s -> %s", rfrom[0] ? rfrom : "?", rto[0] ? rto : "?");
+        else                    snprintf(rt, sizeof(rt), "Route unavailable");
         fold_ascii(rt);
         lv_label_set_text(s_cardRoute, rt);
     } else {
         lv_label_set_text(s_cardRoute, "Looking up route...");     // pending: lookup in flight
     }
+    // The leading separator only made sense when this shared the route line.
+    if (s_cardHist) lv_label_set_text(s_cardHist, hist);
 
     // aircraft photo (planespotters), shown above the card when one is available
     if (in.hex[0]) photo_request(in.hex);
@@ -1349,7 +1338,10 @@ static void build_card(void) {
     s_card = lv_obj_create(s_tileRadar);
     lv_obj_remove_style_all(s_card);
     // large text needs a taller card (three 18px data lines + the route line below them)
-    lv_obj_set_size(s_card, UI_S(s_bigText ? 316 : 300), UI_S(s_bigText ? 148 : 118));
+    // Height covers the title, three data rows, the route row and the history row. The
+    // history shared the route row until the TRACK button -- pinned bottom-right -- was
+    // found sitting on top of "closest 0.8 nm", hiding exactly the part worth reading.
+    lv_obj_set_size(s_card, UI_S(s_bigText ? 316 : 300), UI_S(s_bigText ? 174 : 144));
     lv_obj_align(s_card, LV_ALIGN_CENTER, 0, s_bigText ? 56 : 66);
     lv_obj_set_style_bg_color(s_card, UI_PANEL, 0);
     lv_obj_set_style_bg_opa(s_card, 235, 0);
@@ -1383,6 +1375,16 @@ static void build_card(void) {
     lv_obj_set_style_text_color(s_cardRoute, UI_GREEN, 0);
     lv_obj_align_to(s_cardRoute, s_cardL, LV_ALIGN_OUT_BOTTOM_LEFT, 0, UI_S(4));
 
+
+    // Bottom-left, width-capped so it stops short of the TRACK button no matter how long
+    // the text runs -- a fixed width is what actually guarantees they cannot collide.
+    s_cardHist = lv_label_create(s_card);
+    lv_obj_set_style_text_font(s_cardHist, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_cardHist, UI_SOFT, 0);
+    lv_label_set_long_mode(s_cardHist, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(s_cardHist, UI_S(s_bigText ? 218 : 202));
+    lv_label_set_text(s_cardHist, "");
+    lv_obj_align(s_cardHist, LV_ALIGN_BOTTOM_LEFT, 0, UI_S(-2));
 
     s_cardAirline = lv_label_create(s_card);
     lv_obj_set_style_text_font(s_cardAirline, &lv_font_montserrat_12, 0);
@@ -1930,14 +1932,79 @@ void ui_create(void) {
     lv_obj_set_style_border_width(s_list, 0, 0);
     lv_obj_set_style_pad_row(s_list, 2, 0);
 
-    // --- stats tile (circular panel) ---
+    // --- stats & settings tile (circular panel) ---
     lv_obj_t *sp = make_round_panel(s_tileStats);
-    make_tile_title(sp, "STATS");
+    make_tile_title(sp, "SETTINGS & STATS");
+
+    // Interactive HUD Feature Toggles for screen clutter control
+    auto make_hud_toggle = [&](const char *labelOn, const char *labelOff, bool state, lv_event_cb_t cb, lv_coord_t dx, lv_coord_t dy) {
+        lv_obj_t *btn = lv_btn_create(sp);
+        lv_obj_set_size(btn, UI_S(120), UI_S(30));
+        lv_obj_align(btn, LV_ALIGN_CENTER, dx, dy);
+        lv_obj_set_style_radius(btn, 15, 0);
+        lv_obj_set_style_bg_color(btn, UI_PANEL, 0);
+        lv_obj_set_style_border_color(btn, state ? UI_CYAN : UI_DIM, 0);
+        lv_obj_set_style_border_width(btn, 1, 0);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_CHAIN);
+        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_font(lbl, F12(), 0);
+        lv_obj_set_style_text_color(lbl, state ? UI_CYAN : UI_DIM, 0);
+        lv_label_set_text(lbl, state ? labelOn : labelOff);
+        lv_obj_center(lbl);
+        return btn;
+    };
+
+    make_hud_toggle("VECTORS ON", "VECTORS OFF", radar::vectorLinesEnabled(), [](lv_event_t *e) {
+        bool on = !radar::vectorLinesEnabled();
+        radar::setVectorLinesEnabled(on);
+        lv_obj_t *b = lv_event_get_target(e); lv_obj_t *l = lv_obj_get_child(b, 0);
+        if (l) lv_label_set_text(l, on ? "VECTORS ON" : "VECTORS OFF");
+        lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
+        if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
+    }, UI_S(-66), UI_S(-75));
+
+    make_hud_toggle("TICKS ON", "TICKS OFF", radar::vectorTicksEnabled(), [](lv_event_t *e) {
+        bool on = !radar::vectorTicksEnabled();
+        radar::setVectorTicksEnabled(on);
+        lv_obj_t *b = lv_event_get_target(e); lv_obj_t *l = lv_obj_get_child(b, 0);
+        if (l) lv_label_set_text(l, on ? "TICKS ON" : "TICKS OFF");
+        lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
+        if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
+    }, UI_S(66), UI_S(-75));
+
+    make_hud_toggle("GLOW ON", "GLOW OFF", radar::altGlowEnabled(), [](lv_event_t *e) {
+        bool on = !radar::altGlowEnabled();
+        radar::setAltGlowEnabled(on);
+        lv_obj_t *b = lv_event_get_target(e); lv_obj_t *l = lv_obj_get_child(b, 0);
+        if (l) lv_label_set_text(l, on ? "GLOW ON" : "GLOW OFF");
+        lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
+        if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
+    }, UI_S(-66), UI_S(-38));
+
+    make_hud_toggle("DIST/BRG ON", "DIST/BRG OFF", radar::distBrgLabelEnabled(), [](lv_event_t *e) {
+        bool on = !radar::distBrgLabelEnabled();
+        radar::setDistBrgLabelEnabled(on);
+        lv_obj_t *b = lv_event_get_target(e); lv_obj_t *l = lv_obj_get_child(b, 0);
+        if (l) lv_label_set_text(l, on ? "DIST/BRG ON" : "DIST/BRG OFF");
+        lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
+        if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
+    }, UI_S(66), UI_S(-38));
+
+    make_hud_toggle("FL/SPD ON", "FL/SPD OFF", radar::speedAltFormatEnabled(), [](lv_event_t *e) {
+        bool on = !radar::speedAltFormatEnabled();
+        radar::setSpeedAltFormatEnabled(on);
+        lv_obj_t *b = lv_event_get_target(e); lv_obj_t *l = lv_obj_get_child(b, 0);
+        if (l) lv_label_set_text(l, on ? "FL/SPD ON" : "FL/SPD OFF");
+        lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
+        if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
+    }, UI_S(-66), UI_S(-1));
+
     s_statsLbl = lv_label_create(sp);
-    lv_obj_set_style_text_font(s_statsLbl, F16(), 0);
+    lv_obj_set_style_text_font(s_statsLbl, F14(), 0);
     lv_obj_set_style_text_color(s_statsLbl, UI_SOFT, 0);
     lv_label_set_text(s_statsLbl, "Aircraft   0");
-    lv_obj_align(s_statsLbl, LV_ALIGN_CENTER, UI_S(0), UI_S(-16));
+    lv_obj_align(s_statsLbl, LV_ALIGN_CENTER, UI_S(0), UI_S(42));
 
     s_statsGps = lv_label_create(sp);               // GPS status line (hidden unless GPS is on)
     lv_obj_set_style_text_font(s_statsGps, F14(), 0);
@@ -2367,3 +2434,49 @@ void ui_create(void) {
 
     ui_splash_show();   // branded boot splash on top (auto-fades)
 }
+
+static lv_obj_t *s_flashScr = nullptr;
+static lv_obj_t *s_flashLbl = nullptr;
+static lv_obj_t *s_flashBar = nullptr;
+
+void ui_show_flash_screen(const char *status, int pct) {
+    if (!s_flashScr) {
+        s_flashScr = lv_obj_create(lv_layer_sys());
+        lv_obj_remove_style_all(s_flashScr);
+        lv_obj_set_size(s_flashScr, SCREEN_W, SCREEN_H);
+        lv_obj_center(s_flashScr);
+        lv_obj_set_style_bg_color(s_flashScr, lv_color_hex(0x0A0E0C), 0);
+        lv_obj_set_style_bg_opa(s_flashScr, LV_OPA_COVER, 0);
+
+        lv_obj_t *hdr = lv_label_create(s_flashScr);
+        lv_label_set_text(hdr, "FLASHING FIRMWARE");
+        lv_obj_set_style_text_font(hdr, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(hdr, UI_CYAN, 0);
+        lv_obj_align(hdr, LV_ALIGN_CENTER, 0, UI_S(-45));
+
+        s_flashLbl = lv_label_create(s_flashScr);
+        lv_obj_set_style_text_font(s_flashLbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(s_flashLbl, UI_INK, 0);
+        lv_label_set_text(s_flashLbl, status ? status : "Updating...");
+        lv_obj_align(s_flashLbl, LV_ALIGN_CENTER, 0, UI_S(-15));
+
+        s_flashBar = lv_bar_create(s_flashScr);
+        lv_obj_set_size(s_flashBar, UI_S(240), UI_S(14));
+        lv_obj_align(s_flashBar, LV_ALIGN_CENTER, 0, UI_S(15));
+        lv_obj_set_style_bg_color(s_flashBar, lv_color_hex(0x1F2B25), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_flashBar, UI_CYAN, LV_PART_INDICATOR);
+        lv_bar_set_range(s_flashBar, 0, 100);
+
+        lv_obj_t *warn = lv_label_create(s_flashScr);
+        lv_label_set_text(warn, "DO NOT POWER OFF DEVICE");
+        lv_obj_set_style_text_font(warn, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(warn, UI_AMBER, 0);
+        lv_obj_align(warn, LV_ALIGN_CENTER, 0, UI_S(45));
+    }
+
+    if (s_flashLbl && status) lv_label_set_text(s_flashLbl, status);
+    if (s_flashBar && pct >= 0) lv_bar_set_value(s_flashBar, pct, LV_ANIM_OFF);
+    lv_obj_clear_flag(s_flashScr, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_flashScr);
+}
+

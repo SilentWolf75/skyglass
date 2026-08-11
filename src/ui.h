@@ -28,3 +28,4 @@ void ui_set_large_text(bool on);             // accessibility: bigger fonts ever
 void ui_set_weather_forecast(bool forecast); // false = WX radar, true = 3-day forecast
 void ui_set_weather_mode(int mode);          // 0 = WX radar, 1 = sat clouds, 2 = 3-day forecast
 void ui_preview_weather_icon(int wmoCode);   // diagnostic: force the glyph set to one code
+void ui_show_flash_screen(const char *status, int pct); // Full-screen firmware flashing progress screen

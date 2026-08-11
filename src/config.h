@@ -1,7 +1,7 @@
 #pragma once
 // SkyGlass — build & user configuration.
 
-#define FW_VERSION "1.17.1"   // shown on the web config page + Stats screen; bump on release
+#define FW_VERSION "1.18.0"   // shown on the web config page + Stats screen; bump on release
 // ---------- Board selection ----------
 // Everything hardware-specific (screen geometry, pin map, which peripherals exist)
 // lives in src/boards/<board>.h. Pick one with a -D flag in platformio.ini; the

@@ -452,6 +452,19 @@ static void loadSettings() {
         g_alertMode = (legacy == 0) ? 0 : (legacy == 1 ? ALERT_EMERG : (ALERT_NEW | ALERT_EMERG));
     }
     g_alertMode = constrain(g_alertMode, 0, 3);
+    // Radar screen display options, keyed off the table in radar_view.cpp so a new option
+    // needs nothing here. Toggles made on the device's own HUD buttons come back through
+    // the callback below, so they survive a reboot the same as the web ones.
+    for (int i = 0; i < radar::ROPT_COUNT; ++i) {
+        const radar::RadarOptInfo &oi = radar::optInfo(i);
+        radar::setOptEnabled(i, p.getBool(oi.key, oi.dflt));
+    }
+    radar::onOptChanged([](int idx, bool on) {
+        Preferences pr;
+        pr.begin("capsuleradar", false);
+        pr.putBool(radar::optInfo(idx).key, on);
+        pr.end();
+    });
     g_proximityKm      = p.getFloat("proxkm", 0.0f);
     g_useGps           = p.getBool("usegps", false);
     g_trailLen         = p.getInt("traillen", 2);
@@ -650,7 +663,15 @@ static void handleRoot() {
     if (!spliced) {
         ropts += fmt_opt(curRange, true);
     }
-    const char *tnames[] = {"Phosphor", "Orb", "Amber CRT", "Military", "Red CRT"};
+    // One entry per THEME_* value. The assert is not decoration: the enum lives in
+    // radar_view.h and this list does not, so adding a theme there and forgetting it here
+    // walks off the end of the array and hands %s a garbage pointer. That is not a cosmetic
+    // fault -- it panicked the board on every request for this page, which looks from the
+    // outside like the whole device dropping off the network.
+    const char *tnames[] = {"Phosphor", "Orb", "Amber CRT", "Military", "Red CRT",
+                            "Cyan (aviation)"};
+    static_assert(sizeof(tnames) / sizeof(tnames[0]) == THEME_COUNT,
+                  "tnames[] needs one label per THEME_* value in radar_view.h");
     String topts;
     for (int i = 0; i < THEME_COUNT; ++i) {
         char o[80];
@@ -800,10 +821,22 @@ static void handleRoot() {
         gpsRow += "<div style='font-size:12px;opacity:.6;margin:-2px 0 6px'>"
                   "When on, the location above is used until the GPS gets a fix, then it takes over.</div>";
     }
+    // Radar label checkboxes, generated from the table in radar_view.cpp. Adding an option
+    // there makes it appear here with no edit to this page.
+    String rlopts;
+    for (int i = 0; i < radar::ROPT_COUNT; ++i) {
+        char o[160];
+        snprintf(o, sizeof(o),
+                 "<label><input type=checkbox class=ck %s onchange='rl(%d,this.checked)'>%s</label>",
+                 radar::optEnabled(i) ? "checked" : "", i, radar::optInfo(i).label);
+        rlopts += o;
+    }
     // ~8.7 KB of markup plus ~4.5 KB of generated <option> lists; sized with headroom
     // because a truncated page renders as a broken form. It lives in PSRAM, so the
     // slack is free. The check after snprintf reports if this ever stops being enough.
-    static const size_t BUFSZ = 26624;   // grows with the page; snprintf would silently truncate
+    // Raised from 26624: the page had grown to ~24.6 KB, which is too little slack to
+    // add anything to without silently losing the end of the form.
+    static const size_t BUFSZ = 40960;   // grows with the page; snprintf would silently truncate
     static char *buf = (char *)ps_malloc(BUFSZ);   // PSRAM: keep this big page buffer off the scarce
     if (!buf) return;                              //   internal heap (the contiguous RAM mbedTLS needs)
     const int needed = snprintf(buf, BUFSZ,
@@ -889,6 +922,12 @@ static void handleRoot() {
         "<input type=range min=0 max=100 value='%d' oninput='mop(this.value,0)' onchange='mop(this.value,1)'>"
         "<div style='font-size:12px;opacity:.6;margin-top:4px'>Basemap tiles are redrawn "
         "after a zoom or a move, a few seconds behind the scope.</div></div>"
+        "<div class=card><div class=t>Aircraft labels</div>"
+        "<div style='font-size:12px;opacity:.6;margin-bottom:8px'>Pick what each aircraft "
+        "shows on the radar screen. Fewer items means less overlap when traffic is heavy.</div>"
+        "%s"
+        "<div style='font-size:12px;opacity:.6;margin-top:4px'>Label changes appear on the "
+        "next feed update, a second or two later.</div></div>"
         "<div class=card><div class=t>Sound</div>"
         "<label>Volume</label>"
         "<input type=range min=0 max=100 value='%d' oninput='v(this.value,0)' onchange='v(this.value,1)'>"
@@ -1061,6 +1100,7 @@ static void handleRoot() {
         "document.getElementById('asoff').style.display=m?'none':'block';}"
         "function cf(v){fetch('/clockfmt?v='+v+'&save=1')}"
         "function ti(c){fetch('/typeicons?v='+(c?1:0)+'&save=1')}"
+        "function rl(i,c){fetch('/ropt?i='+i+'&v='+(c?1:0))}"
         "function ai(v){fetch('/ais?v='+v+'&save=1')}"
         "function ak(v){fetch('/ais?key='+encodeURIComponent(v)+'&save=1')}"
         "function lf(v){fetch('/adsblocal?h='+encodeURIComponent(v))}"
@@ -1108,6 +1148,7 @@ static void handleRoot() {
         // units, map, sound, traffic, quiet hours
         tlopts.c_str(), mxopts.c_str(), g_bigText ? "checked" : "", g_rotation, uopts.c_str(),
         g_mapBg ? "checked" : "", msopts.c_str(), g_mapOpa, g_mapOpa,
+        rlopts.c_str(),
         g_volume, g_muted ? "checked" : "", aopts.c_str(),
         npopts.c_str(), epopts.c_str(), popts.c_str(),
         sndStatus,
@@ -1385,6 +1426,15 @@ static void handleSdEnable() {   // turn the card (flight log + photo cache) on 
     g_web.send(200, "text/plain", g_sdEnabled ? "on (restart to apply)" : "off (restart to apply)");
 }
 #endif
+
+static void handleRadarOpt() {   // one endpoint for every radar label option (live + saved)
+    const int idx = g_web.arg("i").toInt();
+    if (idx < 0 || idx >= radar::ROPT_COUNT) { g_web.send(400, "text/plain", "bad option"); return; }
+    // setOptEnabled persists through the callback registered at boot, so there is nothing
+    // to save here -- doing it in both places would just write the key twice.
+    radar::setOptEnabled(idx, g_web.arg("v").toInt() != 0);
+    g_web.send(200, "text/plain", "ok");
+}
 
 static void handleAirports() {   // show/hide airport markers (live)
     if (g_web.hasArg("v")) {
@@ -1968,6 +2018,7 @@ void setup() {
     g_web.on("/idle", handleIdle);
     g_web.on("/sweep", handleSweep);
     g_web.on("/airports", handleAirports);
+    g_web.on("/ropt", handleRadarOpt);
     g_web.on("/ground", handleGround);
     g_web.on("/altmin", handleAltMin);
     g_web.on("/milonly", handleMilOnly);

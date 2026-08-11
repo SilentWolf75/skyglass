@@ -7,11 +7,37 @@
 #include <HTTPClient.h>
 #include <esp_heap_caps.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
+#if defined(BOARD_WAVESHARE_P4_LCD_4C)
+#define NET_TLS_MAX_CONCURRENT 3
+#else
+#define NET_TLS_MAX_CONCURRENT 2
+#endif
+
+static SemaphoreHandle_t s_tlsSem = nullptr;
+
+struct TlsSlot {
+    bool held;
+    explicit TlsSlot(uint32_t waitMs = 3000) {
+        if (!s_tlsSem) s_tlsSem = xSemaphoreCreateCounting(NET_TLS_MAX_CONCURRENT, NET_TLS_MAX_CONCURRENT);
+        held = (s_tlsSem && xSemaphoreTake(s_tlsSem, pdMS_TO_TICKS(waitMs)) == pdTRUE);
+    }
+    ~TlsSlot() { if (held && s_tlsSem) xSemaphoreGive(s_tlsSem); }
+};
+
 bool net_fetch_psram(const char *url, const char *userAgent,
                      uint8_t **out, size_t *outLen, size_t maxLen,
                      int connectTimeoutMs, int totalTimeoutMs) {
     *out = nullptr; *outLen = 0;
     if (WiFi.status() != WL_CONNECTED) return false;
+
+    TlsSlot slot(3000);
+    if (!slot.held) {
+        Serial.println("[net] TLS slot busy, postponing fetch");
+        return false;
+    }
 
     WiFiClientSecure cli;
     cli.setInsecure();                        // hobby device (matches the other clients)

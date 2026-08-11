@@ -4,6 +4,7 @@
 //   THEME_ORB   : Orb scope: green gradient, square grid, the 7 nearest
 //                    aircraft as yellow balls (emitting waves) + off-range arrows.
 #include "radar_view.h"
+#include "units.h"
 #include "config.h"
 #include "geo.h"
 #include "coastline.h"
@@ -137,6 +138,7 @@ static lv_obj_t  *s_rose[4]   = {nullptr, nullptr, nullptr, nullptr};
 static lv_obj_t  *s_centerDot = nullptr;
 static lv_obj_t  *s_pulse     = nullptr;
 static lv_obj_t  *s_rangeLbl  = nullptr;
+static float       s_curRangeKm      = 0.0f;
 static bool       s_rangeLblVisible = true;
 static bool       s_sweepEnabled    = true;
 static bool       s_airportsEnabled = true;
@@ -147,6 +149,30 @@ static bool       s_typeIcons       = true;   // per-type silhouettes vs the pla
 // Diagnostic: draw every contact as military. Military traffic is rare enough that the
 // marker would otherwise only be checked the first time one happens to fly past.
 static bool       s_milPreview      = false;
+// One row per switchable thing the scope draws. Order here is the order the settings
+// page lists them in, so keep it roughly top-to-bottom as they appear on a contact.
+static const radar::RadarOptInfo RADAR_OPTS[radar::ROPT_COUNT] = {
+    { "rl_call", "Callsign / flight ID",     true  },
+    { "rl_alt",  "Altitude",                 true  },
+    { "rl_vs",   "Climb / descent arrow",    true  },
+    { "rl_spd",  "Ground speed",             true  },
+    { "rl_db",   "Distance and bearing",     false },
+    { "rl_vec",  "Heading vector line",      true  },
+    { "rl_tick", "Vector minute ticks",      true  },
+    { "rl_glow", "Altitude glow halo",       true  },
+};
+// Deliberately not a second list of defaults -- those live in RADAR_OPTS above and are
+// copied across on first use. Two hand-maintained lists is how the theme dropdown ended
+// up reading past the end of its array.
+static bool s_opt[radar::ROPT_COUNT];
+static bool s_optReady = false;
+static void (*s_optCb)(int, bool) = nullptr;
+
+static void opts_ensure(void) {
+    if (s_optReady) return;
+    s_optReady = true;
+    for (int i = 0; i < radar::ROPT_COUNT; ++i) s_opt[i] = RADAR_OPTS[i].dflt;
+}
 static int        s_maxOnScreen     = 20;          // how many (nearest) aircraft to draw (web-configurable)
 static bool       s_bigText         = false;       // accessibility: bigger glyph labels (set before init)
 static int        s_trailMax        = TRAIL_MAX;   // per-aircraft trail length (0 = off)
@@ -189,7 +215,7 @@ struct AcDraw {
     char       hex[8];
     char       call[12];
     char       type[8];
-    char       altTxt[12];
+    char       altTxt[40];   // altitude + arrow + speed + dist/bearing, any subset
     float      altFt;
     bool       onGround;
     float      vsFpm, gsKt, distKm, bearingDeg;
@@ -426,6 +452,26 @@ static void grid_draw_cb(lv_event_t *e) {
     const lv_coord_t rr[4] = { 50, 104, 160, RADAR_R_OUTER_PX };
     const lv_opa_t   ro[4] = { 66, 66, 66, 87 };
     for (int i = 0; i < 4; ++i) { ad.opa = ro[i]; lv_draw_arc(d, &ad, &c, rr[i], 0, 360); }
+
+    // Range-ring scale labels (e.g. 5 NM, 10 NM, 15 NM) drawn along the radial rings, in
+    // whatever unit the settings page is set to -- these sit on the same screen as the
+    // zoom pill, which already converts, so a fixed NM here read as a mismatch.
+    if (s_curRangeKm > 0.0f) {
+        lv_draw_label_dsc_t rlbl;
+        lv_draw_label_dsc_init(&rlbl);
+        rlbl.color = s_cSoft;
+        rlbl.opa = 160;
+        rlbl.font = &lv_font_montserrat_12;
+        const float rangeVal = units_dist(s_curRangeKm);
+        for (int i = 0; i < 4; ++i) {
+            const float ringVal = rangeVal * ((float)rr[i] / (float)RADAR_R_OUTER_PX);
+            char ringTxt[12];
+            snprintf(ringTxt, sizeof(ringTxt), "%.0f%s", (double)ringVal, units_dist_label_caps());
+            lv_area_t ra = { (lv_coord_t)(s_cx + 4), (lv_coord_t)(s_cy - rr[i] - 12),
+                             (lv_coord_t)(s_cx + 50), (lv_coord_t)(s_cy - rr[i] + 4) };
+            lv_draw_label(d, &rlbl, &ra, ringTxt, NULL);
+        }
+    }
 
     lv_draw_line_dsc_t ll;
     lv_draw_line_dsc_init(&ll);
@@ -970,6 +1016,45 @@ static void ac_draw_cb(lv_event_t *e) {
             const float th = ((ac.track != ac.track) ? 0.0f : ac.track) * (float)M_PI / 180.0f;
             const float c = cosf(th), s = sinf(th);
 
+            // ATC-style velocity vector line projecting forward from aircraft nose with 1-min & 2-min prediction ticks
+            if (radar::optEnabled(radar::ROPT_VECTOR) && ac.gsKt > 15.0f) {
+                lv_draw_line_dsc_t vec;
+                lv_draw_line_dsc_init(&vec);
+                vec.color = ac.color;
+                vec.width = (lv_coord_t)(1 * gk < 1 ? 1 : lroundf(1 * gk));
+                vec.opa = (lv_opa_t)(targetOpa * 0.65f);
+                const float vecLen = (ac.gsKt / 450.0f) * 28.0f * gk;
+                const lv_point_t vecEnd = {
+                    (lv_coord_t)(ac.pos.x + (lv_coord_t)lroundf(vecLen * sinf(th))),
+                    (lv_coord_t)(ac.pos.y - (lv_coord_t)lroundf(vecLen * cosf(th)))
+                };
+                lv_draw_line(d, &vec, &ac.pos, &vecEnd);
+
+                if (radar::optEnabled(radar::ROPT_VECTOR_TICKS)) {
+                    // ATC 1-minute and 2-minute prediction ticks along vector
+                    for (int tk = 1; tk <= 2; ++tk) {
+                        const float frac = tk * 0.5f;
+                        const float tx = ac.pos.x + vecLen * frac * sinf(th);
+                        const float ty = ac.pos.y - vecLen * frac * cosf(th);
+                        const float perpX = cosf(th) * 2.5f * gk;
+                        const float perpY = sinf(th) * 2.5f * gk;
+                        lv_point_t p1 = { (lv_coord_t)lroundf(tx - perpX), (lv_coord_t)lroundf(ty - perpY) };
+                        lv_point_t p2 = { (lv_coord_t)lroundf(tx + perpX), (lv_coord_t)lroundf(ty + perpY) };
+                        lv_draw_line(d, &vec, &p1, &p2);
+                    }
+                }
+            }
+
+            // Altitude band glow halo behind aircraft blip
+            if (radar::optEnabled(radar::ROPT_ALT_GLOW)) {
+                lv_draw_arc_dsc_t altGlow;
+                lv_draw_arc_dsc_init(&altGlow);
+                altGlow.color = ac.color;
+                altGlow.width = (lv_coord_t)(2 * gk < 1 ? 1 : lroundf(2 * gk));
+                altGlow.opa = (lv_opa_t)(targetOpa * 0.35f);
+                lv_draw_arc(d, &altGlow, &ac.pos, (lv_coord_t)(12 * gk), 0, 360);
+            }
+
             lv_draw_rect_dsc_t g;
             lv_draw_rect_dsc_init(&g);
             g.bg_color = ac.color;
@@ -1072,7 +1157,8 @@ static void ac_draw_cb(lv_event_t *e) {
             lc.color = s_cInk;
             lv_area_t a1 = { px, (lv_coord_t)(yTop + pdy),
                              (lv_coord_t)(px + wmax), (lv_coord_t)(ac.pos.y + 4 * gk + pdy) };
-            if (ac.call[0]) lv_draw_label(d, &lc, &a1, ac.call, NULL);
+            if (ac.call[0] && radar::optEnabled(radar::ROPT_CALLSIGN))
+                lv_draw_label(d, &lc, &a1, ac.call, NULL);
             lv_draw_label_dsc_t la;
             lv_draw_label_dsc_init(&la);
             la.font = fa;
@@ -1133,6 +1219,10 @@ void setTheme(int t) {
     const bool drg = orb();
 
     switch (s_theme) {                          // pick the scope chrome palette
+        case THEME_CYAN:
+            s_accentHex = 0x00E5FF;
+            s_cRing = lv_color_hex(0x00E5FF); s_cLead = lv_color_hex(0x80F2FF);
+            s_cInk  = lv_color_hex(0xE0FAFF); s_cSoft = lv_color_hex(0x99F5FF); break;
         case THEME_AMBER:
             s_accentHex = 0xFFB23C;
             s_cRing = lv_color_hex(0xFFB23C); s_cLead = lv_color_hex(0xFFD27A);
@@ -1366,6 +1456,7 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
     // Reproject the coastline only when the scope geometry actually changes (home
     // moved or range zoomed) — never per frame. Then repaint the static chrome layer.
     static double s_coLat = 1e9, s_coLon = 1e9; static float s_coRange = -1.0f;
+    s_curRangeKm = (float)s.rangeKm;
     if (s.homeLat != s_coLat || s.homeLon != s_coLon || s.rangeKm != s_coRange) {
         const bool firstFix = (s_coRange < 0.0f);
         s_coLat = s.homeLat; s_coLon = s.homeLon; s_coRange = s.rangeKm;
@@ -1462,8 +1553,43 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
         d.lon = ac.lon;
         d.cat = (uint8_t)aircraft_category(ac.type.c_str(), ac.altBaro, ac.gs);
         d.squawk = ac.squawk;
-        if (ac.onGround) snprintf(d.altTxt, sizeof(d.altTxt), "GND");
-        else             snprintf(d.altTxt, sizeof(d.altTxt), "%.0f ft", (double)ac.altBaro);
+        const char *vDir = "";
+        if (!ac.onGround && (ac.baroRate == ac.baroRate)) {
+            if (ac.baroRate > 128.0f)       vDir = " ^";  // climbing
+            else if (ac.baroRate < -128.0f) vDir = " v";  // descending
+        }
+        // The second label line is assembled from independently switchable parts, so any
+        // combination works -- speed on its own, altitude without the arrow, and so on.
+        // Each part carries its own leading separator and the join trims a leading space,
+        // which keeps the parts order-independent and avoids a ragged " 450kt".
+        // Altitude carries no suffix -- these labels sit on top of the map and every
+        // character costs room. Flight levels are a feet-based convention, so metric drops
+        // them and shows metres throughout.
+        char altTxt[12] = "";
+        if (optEnabled(ROPT_ALTITUDE)) {
+            if (ac.onGround)
+                snprintf(altTxt, sizeof(altTxt), "GND");
+            else if (units_alt_is_feet() && ac.altBaro >= 18000.0f)
+                snprintf(altTxt, sizeof(altTxt), "FL%d", (int)(ac.altBaro / 100.0f));
+            else
+                snprintf(altTxt, sizeof(altTxt), "%.0f", (double)units_alt(ac.altBaro));
+        }
+        const char *vsTxt = (optEnabled(ROPT_VSARROW) && !ac.onGround) ? vDir : "";
+        char spdTxt[16] = "";
+        if (optEnabled(ROPT_SPEED) && ac.gs == ac.gs && ac.gs > 15.0f) {
+            snprintf(spdTxt, sizeof(spdTxt), " %.0f%s", (double)units_spd(ac.gs), units_spd_label());
+        }
+        char dbTxt[24] = "";
+        if (optEnabled(ROPT_DISTBRG)) {
+            snprintf(dbTxt, sizeof(dbTxt), " %.1f%s %.0f°",
+                     (double)units_dist((float)distKm), units_dist_label_caps(), (double)brg);
+        }
+
+        char line[sizeof(d.altTxt)];
+        snprintf(line, sizeof(line), "%s%s%s%s", altTxt, vsTxt, spdTxt, dbTxt);
+        const char *trimmed = line;
+        while (*trimmed == ' ') ++trimmed;
+        snprintf(d.altTxt, sizeof(d.altTxt), "%s", trimmed);
 
         // Measure the label once here rather than per frame in layout_labels(): the text
         // only changes when the feed does, while placement is redone on every motion step.
@@ -1472,7 +1598,8 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
             const lv_font_t *fc = (s_bigText || bigPanel) ? &lv_font_montserrat_18 : &lv_font_montserrat_14;
             const lv_font_t *fa = (s_bigText || bigPanel) ? &lv_font_montserrat_16 : &lv_font_montserrat_12;
             lv_point_t szc = { 0, 0 }, sza = { 0, 0 };
-            if (d.call[0])   lv_txt_get_size(&szc, d.call,   fc, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            if (d.call[0] && optEnabled(ROPT_CALLSIGN))
+                lv_txt_get_size(&szc, d.call,   fc, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
             if (d.altTxt[0]) lv_txt_get_size(&sza, d.altTxt, fa, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
             d.lblW = LV_MAX(szc.x, sza.x);
         }
@@ -1701,5 +1828,40 @@ void setMapOpacity(int percent) {
 }
 
 void tickSweep() { /* sweep self-animates via lv_timer */ }
+
+const RadarOptInfo &optInfo(int idx) {
+    return RADAR_OPTS[(idx >= 0 && idx < ROPT_COUNT) ? idx : 0];
+}
+
+bool optEnabled(int idx) {
+    if (idx < 0 || idx >= ROPT_COUNT) return false;
+    opts_ensure();
+    return s_opt[idx];
+}
+
+void setOptEnabled(int idx, bool on) {
+    if (idx < 0 || idx >= ROPT_COUNT) return;
+    opts_ensure();
+    if (s_opt[idx] == on) return;
+    s_opt[idx] = on;
+    // Purely visual options (vector line, ticks, glow) are read in the draw path, so the
+    // invalidate below shows them at once. The label-content options are built in the feed
+    // path instead, so those take effect on the next poll -- a second or two, not instant.
+    if (s_acLayer) lv_obj_invalidate(s_acLayer);
+    if (s_optCb) s_optCb(idx, on);
+}
+
+void onOptChanged(void (*cb)(int, bool)) { s_optCb = cb; }
+
+void setVectorLinesEnabled(bool on)   { setOptEnabled(ROPT_VECTOR, on); }
+bool vectorLinesEnabled()            { return optEnabled(ROPT_VECTOR); }
+void setVectorTicksEnabled(bool on)   { setOptEnabled(ROPT_VECTOR_TICKS, on); }
+bool vectorTicksEnabled()            { return optEnabled(ROPT_VECTOR_TICKS); }
+void setAltGlowEnabled(bool on)       { setOptEnabled(ROPT_ALT_GLOW, on); }
+bool altGlowEnabled()                { return optEnabled(ROPT_ALT_GLOW); }
+void setDistBrgLabelEnabled(bool on)  { setOptEnabled(ROPT_DISTBRG, on); }
+bool distBrgLabelEnabled()           { return optEnabled(ROPT_DISTBRG); }
+void setSpeedAltFormatEnabled(bool on){ setOptEnabled(ROPT_SPEED, on); }
+bool speedAltFormatEnabled()         { return optEnabled(ROPT_SPEED); }
 
 } // namespace radar

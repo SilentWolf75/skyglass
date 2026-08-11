@@ -1,5 +1,6 @@
 #include "updater.h"
 #include "config.h"
+#include "ui.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -186,6 +187,7 @@ static void do_check(void) {
 static void do_install(void) {
     Serial.println("[update] downloading firmware...");
     set_status("downloading...");
+    ui_show_flash_screen("Downloading update...", 0);
 
     WiFiClientSecure cli;
     cli.setInsecure();
@@ -194,15 +196,16 @@ static void do_install(void) {
     http.setConnectTimeout(5000);
     http.setTimeout(15000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    if (!http.begin(cli, UPDATE_FIRMWARE_URL)) { set_status("download failed to start"); return; }
+    if (!http.begin(cli, UPDATE_FIRMWARE_URL)) { set_status("download failed to start"); cli.stop(); return; }
     http.addHeader("User-Agent", ADSB_USER_AGENT);
     const int code = http.GET();
-    if (code != 200) { http.end(); set_status("download failed"); return; }
+    if (code != 200) { http.end(); cli.stop(); set_status("download failed"); return; }
 
     const int total = http.getSize();
-    if (total <= 0) { http.end(); set_status("server sent no length"); return; }
+    if (total <= 0) { http.end(); cli.stop(); set_status("server sent no length"); return; }
     if (!Update.begin((size_t)total)) {
         http.end();
+        cli.stop();
         set_status("not enough space for the update");
         Serial.printf("[update] Update.begin(%d) failed\n", total);
         return;
@@ -224,11 +227,12 @@ static void do_install(void) {
                 lastData = millis();
                 static int lastPct = -1;
                 const int pct = (int)((long)written * 100 / total);
-                if (pct != lastPct && pct % 10 == 0) {
+                if (pct != lastPct) {
                     lastPct = pct;
-                    char m[48]; snprintf(m, sizeof(m), "installing... %d%%", pct);
+                    char m[48]; snprintf(m, sizeof(m), "Installing... %d%%", pct);
                     set_status(m);
-                    Serial.printf("[update] %d%%\n", pct);
+                    ui_show_flash_screen(m, pct);
+                    if (pct % 10 == 0) Serial.printf("[update] %d%%\n", pct);
                 }
             }
         } else if (!http.connected() || millis() - lastData > 20000) {
@@ -247,6 +251,7 @@ static void do_install(void) {
     }
     Serial.println("[update] installed; rebooting");
     set_status("installed - rebooting");
+    ui_show_flash_screen("Rebooting device...", 100);
     delay(600);
     ESP.restart();
 }

@@ -146,6 +146,7 @@ bool AdsbClient::fetchFrom(const char* host, std::vector<Aircraft>& out, bool lo
 
     if (!_http.begin(local ? (WiFiClient &)_plain : (WiFiClient &)_client, url)) {
         Serial.printf("[adsb] begin failed (%s)\n", host);
+        if (local) _plain.stop(); else _client.stop();
         return false;
     }
     _http.addHeader("User-Agent", ADSB_USER_AGENT);

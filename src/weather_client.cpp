@@ -91,6 +91,7 @@ bool weather_fetch(double lat, double lon, WeatherSnapshot &out) {
     http.setTimeout(7000);
     if (!http.begin(client, url)) {
         Serial.println("[weather] HTTP begin failed");
+        client.stop();
         return false;
     }
     http.addHeader("User-Agent", ADSB_USER_AGENT);
