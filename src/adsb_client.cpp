@@ -6,6 +6,7 @@
 // need are kept, and hard-cap the number of aircraft (ADSB_MAX_AIRCRAFT). The radar
 // then keeps only the nearest ~20 for display.
 #include "adsb_client.h"
+#include <ctype.h>
 #include "config.h"
 #include "geo.h"           // haversineKm — keep the nearest N aircraft
 #include <WiFi.h>
@@ -241,6 +242,12 @@ bool AdsbClient::fetchFrom(const char* host, std::vector<Aircraft>& out, bool lo
         if (ac.hex.length() == 0) continue;
         ac.flight = String((const char*)(a["flight"] | "")); ac.flight.trim();
         ac.type   = (const char*)(a["t"] | "");
+        {
+            const char *cat = (const char*)(a["category"] | "");
+            ac.emitter[0] = cat[0] ? (char)toupper((unsigned char)cat[0]) : 0;
+            ac.emitter[1] = (cat[0] && cat[1]) ? cat[1] : 0;
+            ac.emitter[2] = 0;
+        }
         ac.lat = lat; ac.lon = lon;
         ac.onGround = onGround;
         ac.altBaro  = altFt;

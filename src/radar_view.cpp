@@ -1551,7 +1551,7 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
         d.bearingDeg = (float)brg;
         d.lat = ac.lat;
         d.lon = ac.lon;
-        d.cat = (uint8_t)aircraft_category(ac.type.c_str(), ac.altBaro, ac.gs);
+        d.cat = (uint8_t)aircraft_category(ac.type.c_str(), ac.altBaro, ac.gs, ac.emitter);
         d.squawk = ac.squawk;
         const char *vDir = "";
         if (!ac.onGround && (ac.baroRate == ac.baroRate)) {

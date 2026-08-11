@@ -20,4 +20,9 @@ enum AcCategory : uint8_t {
 };
 
 // Longest-prefix match against the embedded table; fallback based on altitude/speed when unlisted.
-AcCategory aircraft_category(const char *icaoType, float altFt = 0.0f, float gsKt = 0.0f);
+// `emitter` is the ADS-B emitter category ("A7", "B1", ...) when the feed carries it.
+// It is consulted after the type-code table and before the altitude/speed guess: less
+// specific than a real type code, but broadcast by the aircraft rather than looked up,
+// so it is right where the database is simply missing an entry.
+AcCategory aircraft_category(const char *icaoType, float altFt = 0.0f, float gsKt = 0.0f,
+                             const char *emitter = nullptr);

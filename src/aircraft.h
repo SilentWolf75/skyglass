@@ -15,6 +15,11 @@ struct Aircraft {
     String   hex;            // ICAO 24-bit id (stable key)
     String   flight;         // callsign
     String   type;           // e.g. "B738" (when available)
+    // ADS-B emitter category as broadcast by the aircraft ("A7" = rotorcraft, "B1" =
+    // glider, ...). Unlike `type`, which the aggregators fill in from a registration
+    // database and often leave blank, this rides in the transponder messages themselves,
+    // so it is present for traffic the database has never heard of.
+    char     emitter[3] = {0, 0, 0};
     double   lat = 0, lon = 0;
     float    altBaro = 0;    // ft (NAN if on ground)
     bool     onGround = false;

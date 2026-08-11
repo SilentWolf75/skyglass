@@ -157,7 +157,34 @@ static const TypeRule TYPE_RULES[] = {
 
 static const int TYPE_RULES_N = (int)(sizeof(TYPE_RULES) / sizeof(TYPE_RULES[0]));
 
-AcCategory aircraft_category(const char *icaoType, float altFt, float gsKt) {
+// ADS-B emitter category -> silhouette. Only the ones that map to a distinct shape are
+// listed; A0 (no information) and the surface/obstacle C classes deliberately fall
+// through to the guess below rather than pretending to know.
+static AcCategory cat_from_emitter(const char *e) {
+    if (!e || !e[0] || !e[1]) return AC_CAT_COUNT;      // COUNT = "no opinion"
+    if (e[0] == 'A') {
+        switch (e[1]) {
+            case '1': return AC_CAT_LIGHT;        // < 15 500 lb
+            case '2': return AC_CAT_SMALLJET;     // 15 500 - 75 000 lb
+            case '3': return AC_CAT_NARROW;       // 75 000 - 300 000 lb
+            case '4': return AC_CAT_NARROW;       // high-vortex large (B757)
+            case '5': return AC_CAT_WIDE;         // > 300 000 lb
+            case '6': return AC_CAT_FIGHTER;      // high performance
+            case '7': return AC_CAT_HELI;         // rotorcraft
+            default:  break;
+        }
+    } else if (e[0] == 'B') {
+        switch (e[1]) {
+            case '1': return AC_CAT_GLIDER;       // glider / sailplane
+            case '4': return AC_CAT_LIGHT;        // ultralight / paraglider
+            default:  break;
+        }
+    }
+    return AC_CAT_COUNT;
+}
+
+AcCategory aircraft_category(const char *icaoType, float altFt, float gsKt,
+                             const char *emitter) {
     if (icaoType && icaoType[0]) {
         char t[10];
         int j = 0;
@@ -175,8 +202,18 @@ AcCategory aircraft_category(const char *icaoType, float altFt, float gsKt) {
         }
     }
 
-    // Smart fallback when type code is unlisted or missing:
-    // Low altitude / low speed traffic is predominantly light general aviation.
+    // No usable type code. Before guessing from altitude and speed, take what the
+    // aircraft says about itself: the aggregators leave `t` blank for anything their
+    // registration database does not cover -- a third of the traffic overhead on a
+    // typical afternoon -- and every one of those was being drawn as an airliner-ish
+    // dart. A rotorcraft that broadcasts A7 should look like a rotorcraft.
+    {
+        const AcCategory fromEmitter = cat_from_emitter(emitter);
+        if (fromEmitter != AC_CAT_COUNT) return fromEmitter;
+    }
+
+    // Last resort when neither a type code nor an emitter category is available:
+    // low altitude / low speed traffic is predominantly light general aviation.
     if ((altFt > 0.0f && altFt < 12000.0f) || (gsKt > 0.0f && gsKt < 210.0f)) {
         return AC_CAT_LIGHT;
     }
