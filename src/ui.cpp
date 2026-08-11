@@ -1936,7 +1936,10 @@ void ui_create(void) {
     lv_obj_t *sp = make_round_panel(s_tileStats);
     make_tile_title(sp, "SETTINGS & STATS");
 
-    // Interactive HUD Feature Toggles for screen clutter control
+    // Interactive HUD feature toggles. The grid sits between the title and the stats
+    // text; rows are 37 apart and the lowest has to stay clear of s_statsLbl, which is
+    // centred at +42 and six lines tall, so it starts around -6. At the old -1 the bottom
+    // row printed straight over the "Aircraft N" line.
     auto make_hud_toggle = [&](const char *labelOn, const char *labelOff, bool state, lv_event_cb_t cb, lv_coord_t dx, lv_coord_t dy) {
         lv_obj_t *btn = lv_btn_create(sp);
         lv_obj_set_size(btn, UI_S(120), UI_S(30));
@@ -1962,7 +1965,7 @@ void ui_create(void) {
         if (l) lv_label_set_text(l, on ? "VECTORS ON" : "VECTORS OFF");
         lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
         if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
-    }, UI_S(-66), UI_S(-75));
+    }, UI_S(-66), UI_S(-112));
 
     make_hud_toggle("TICKS ON", "TICKS OFF", radar::vectorTicksEnabled(), [](lv_event_t *e) {
         bool on = !radar::vectorTicksEnabled();
@@ -1971,7 +1974,7 @@ void ui_create(void) {
         if (l) lv_label_set_text(l, on ? "TICKS ON" : "TICKS OFF");
         lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
         if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
-    }, UI_S(66), UI_S(-75));
+    }, UI_S(66), UI_S(-112));
 
     make_hud_toggle("GLOW ON", "GLOW OFF", radar::altGlowEnabled(), [](lv_event_t *e) {
         bool on = !radar::altGlowEnabled();
@@ -1980,7 +1983,7 @@ void ui_create(void) {
         if (l) lv_label_set_text(l, on ? "GLOW ON" : "GLOW OFF");
         lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
         if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
-    }, UI_S(-66), UI_S(-38));
+    }, UI_S(-66), UI_S(-75));
 
     make_hud_toggle("DIST/BRG ON", "DIST/BRG OFF", radar::distBrgLabelEnabled(), [](lv_event_t *e) {
         bool on = !radar::distBrgLabelEnabled();
@@ -1989,7 +1992,7 @@ void ui_create(void) {
         if (l) lv_label_set_text(l, on ? "DIST/BRG ON" : "DIST/BRG OFF");
         lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
         if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
-    }, UI_S(66), UI_S(-38));
+    }, UI_S(66), UI_S(-75));
 
     make_hud_toggle("FL/SPD ON", "FL/SPD OFF", radar::speedAltFormatEnabled(), [](lv_event_t *e) {
         bool on = !radar::speedAltFormatEnabled();
@@ -1998,7 +2001,7 @@ void ui_create(void) {
         if (l) lv_label_set_text(l, on ? "FL/SPD ON" : "FL/SPD OFF");
         lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
         if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
-    }, UI_S(-66), UI_S(-1));
+    }, UI_S(-66), UI_S(-38));
 
     s_statsLbl = lv_label_create(sp);
     lv_obj_set_style_text_font(s_statsLbl, F14(), 0);
