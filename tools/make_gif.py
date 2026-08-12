@@ -45,6 +45,7 @@ THEMES = [
     ("theme-amber.png",    1300),
     ("theme-military.png", 1300),
     ("theme-red.png",      1300),
+    ("theme-cyan.png",     1300),
 ]
 
 

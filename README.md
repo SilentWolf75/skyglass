@@ -50,10 +50,10 @@ Every image on this page is the **real framebuffer from my device**, pulled over
 ### Themes
 
 Long-press the screen to cycle, or pick one on the config page — **Phosphor**, **Orb**,
-**Amber CRT**, **Military** and **Red CRT**, all five captured on the device:
+**Amber CRT**, **Military**, **Red CRT** and **Cyan**, all six captured on the device:
 
 <p align="center">
-  <img src="docs/img/themes.gif" width="300" alt="The five themes cycling">
+  <img src="docs/img/themes.gif" width="300" alt="The six themes cycling">
 </p>
 
 **Military** is night-vision rather than a green repaint: every contact is one phosphor
