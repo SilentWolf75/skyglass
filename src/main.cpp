@@ -2082,6 +2082,7 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
                  "\"lv_biggest\":%u,\"lv_frag\":%u,"
                  "\"lbl_us\":%u,\"lbl_moves\":%u,\"lbl_seen\":%u,"
                  "\"sd\":\"%s\",\"sd_recs\":%u,\"sd_hit\":%u,\"sd_app\":%u,\"sd_rderr\":%u,\"sd_photos\":%u,\"sd_on\":%u,\"photo\":\"%s\","
+                 "\"q_lat\":%.5f,\"q_lon\":%.5f,"
                  "\"fps\":%.1f,\"draw_us\":%u,\"step_avg\":%.2f,\"step_max\":%.2f,\"frame_ms\":%u,"
                  "\"lvgl_ms\":%.1f,\"rest_ms\":%.1f}",
                  FW_VERSION, (unsigned long)(millis() / 1000),
@@ -2103,7 +2104,8 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
 #else
                  0u,
 #endif
-                 photo_note_get(), sfps, sdraw, savg, smax, (unsigned)radar::sweepFrameMs(), g_loopLvglMs, g_loopRestMs);
+                 photo_note_get(),
+                 g_adsb.queryLat(), g_adsb.queryLon(), sfps, sdraw, savg, smax, (unsigned)radar::sweepFrameMs(), g_loopLvglMs, g_loopRestMs);
         g_web.send(200, "application/json", j);
     });
     g_web.on("/fwupd", handleFwUpd);

@@ -10,6 +10,11 @@
 
 class AdsbClient {
 public:
+    // What the feed is actually being asked for. Exposed because the displayed centre and
+    // the queried centre are two different things, and when they disagree the scope looks
+    // empty for no visible reason -- /diag reports both so the disagreement is checkable.
+    double queryLat() const { return _lat; }
+    double queryLon() const { return _lon; }
     ~AdsbClient() { _http.end(); }
     void begin(double homeLat, double homeLon, float rangeKm);
     void setHome(double lat, double lon) { _lat = lat; _lon = lon; }
