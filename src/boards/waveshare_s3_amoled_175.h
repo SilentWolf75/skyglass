@@ -28,6 +28,15 @@
 // One hour of loop. 6 frames x 200 KB = 1.2 MB; this board has ~5 MB of PSRAM left and
 // shares it with the photo cache and the map tiles, so the whole 13 would be greedy.
 #define WX_RADAR_FRAMES     6
+// Twelve rows, not the default twenty-four. Measured on this board: visiting the list
+// took the LVGL pool from 25.2 KB free to 14.7 KB -- 10.5 KB, which is 24 rows at the
+// ~437 bytes each costs, and the single largest consumer in the whole UI. Twelve is
+// still more than the panel shows at once, and it hands back five kilobytes of a pool
+// that was sitting at 79% used with the assert handler wired to reboot.
+//
+// The pool itself cannot simply be grown: it is a fixed slice of internal RAM, and this
+// board only has ~32 KB contiguous left for mbedTLS as it is.
+#define UI_LIST_MAX_ROWS    12
 #define LCD_COL_OFFSET      6              // CO5300 column (x) gap on this panel (esp_lcd set_gap 0x06)
 #define LCD_ROW_OFFSET      0              // no row (y) gap
 #define LCD_QSPI_HZ         80000000       // CO5300 QSPI clock (vendor uses 40 MHz)

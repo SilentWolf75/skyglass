@@ -1,7 +1,7 @@
 #pragma once
 // SkyGlass — build & user configuration.
 
-#define FW_VERSION "1.19.2"   // shown on the web config page + Stats screen; bump on release
+#define FW_VERSION "1.19.3"   // shown on the web config page + Stats screen; bump on release
 // ---------- Board selection ----------
 // Everything hardware-specific (screen geometry, pin map, which peripherals exist)
 // lives in src/boards/<board>.h. Pick one with a -D flag in platformio.ini; the
@@ -64,7 +64,11 @@ static const float RANGE_STEPS_KM[] = {1.60934f, 4.82803f, 10.0f, 20.0f, 30.0f, 
 // the couple of dozen contacts a local receiver typically shows it changes nothing; what
 // it protects against is ADSB_MAX_AIRCRAFT in busy airspace, where 120 rows would want
 // ~52 KB and the S3 only has ~21 KB of pool free once every screen has been visited.
-#define UI_LIST_MAX_ROWS    24
+// Overridable per board: the pool is a fixed slice of internal RAM and the S3's is both
+// smaller and more contended than the P4's.
+#ifndef UI_LIST_MAX_ROWS
+#  define UI_LIST_MAX_ROWS  24
+#endif
 
 #define ADSB_MAX_AIRCRAFT   120             // hard cap parsed per poll (protect RAM in busy areas)
 // When the primary feed answers cleanly but with zero aircraft, re-probe the fallback
