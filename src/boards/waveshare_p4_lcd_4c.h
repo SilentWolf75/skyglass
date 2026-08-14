@@ -37,7 +37,8 @@
 #define RADAR_R_OUTER_PX    337
 // Weather image. At the S3's 360 it filled only the middle half of this panel; the full
 // fetched tile fills the face and still leaves a band top and bottom for the chrome.
-#define WX_RADAR_SIZE       480
+#define WX_RADAR_SIZE       720   // full bleed: the panel width
+#define WX_RADAR_SOURCE_SIZE 768  // fetched a little larger, then centre-cropped
 // The full two-hour RainViewer history: 13 frames x 450 KB = 5.9 MB of 25 MB free.
 #define WX_RADAR_FRAMES     13
 #define LCD_COL_OFFSET      0

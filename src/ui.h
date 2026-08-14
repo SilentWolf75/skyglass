@@ -15,6 +15,11 @@ void ui_set_date(const char *date);  // top HUD date line (e.g. "08 Jun 2026")
 // not known yet. Worth showing -- the two answer with different skies, and there is no
 // other way to tell from the device which one you are looking at.
 void ui_set_feed_source(int src);
+// Tapping the weather zoom buttons calls this. The UI does not fetch anything itself --
+// the tiles are pulled by the network task, which owns the schedule -- so this is how it
+// gets told to go again now instead of waiting out the refresh interval.
+typedef void (*UiWxZoomCb)(int zoom);
+void ui_set_wx_zoom_cb(UiWxZoomCb cb);
 void ui_set_netinfo(const char *line);  // stats view footer: how to reach the config page
 void ui_set_gps(int state, int sats);   // GPS indicator: state 0=off/hidden 1=acquiring 2=fix; HUD icon + Stats line
 void ui_splash_show(void);  // branded boot splash (auto-fades, covers init time)

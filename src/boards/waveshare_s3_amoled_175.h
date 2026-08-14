@@ -24,7 +24,7 @@
 #define RADAR_R_OUTER_PX    218            // outer ring radius in pixels
 // Weather image (a centre crop of the 512 px source tile). At 360 the header and the
 // source line had nowhere to go but on top of the imagery; 320 leaves a band at each end.
-#define WX_RADAR_SIZE       320
+#define WX_RADAR_SIZE       466   // full bleed: the panel width
 // One hour of loop. 6 frames x 200 KB = 1.2 MB; this board has ~5 MB of PSRAM left and
 // shares it with the photo cache and the map tiles, so the whole 13 would be greedy.
 #define WX_RADAR_FRAMES     6

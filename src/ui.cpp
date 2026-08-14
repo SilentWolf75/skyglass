@@ -126,6 +126,10 @@ static lv_obj_t *s_statsNet = nullptr;
 static lv_obj_t *s_hudGps   = nullptr;   // HUD satellite icon (hidden unless GPS auto-location is on)
 static lv_obj_t *s_statsGps = nullptr;   // Stats view GPS status line
 static lv_obj_t *s_weatherNow = nullptr, *s_weatherMeta = nullptr, *s_weatherDays = nullptr;
+static lv_obj_t *s_wxZoomIn = nullptr, *s_wxZoomOut = nullptr;
+static UiWxZoomCb s_wxZoomCb = nullptr;
+void ui_set_wx_zoom_cb(UiWxZoomCb cb) { s_wxZoomCb = cb; }
+
 static lv_obj_t *s_wxCanvas = nullptr, *s_wxStatus = nullptr, *s_wxAirport = nullptr;
 static lv_obj_t *s_wxAttrib = nullptr;
 static lv_obj_t *s_wxRings[3] = { nullptr, nullptr, nullptr };
@@ -222,10 +226,8 @@ static const char *dist_unit_caps(void)  { return units_dist_label_caps(); }
 
 // Coverage radius of each imagery product. These are properties of the source data
 // (RainViewer tile span, EUMETSAT crop), so they live in km and convert for display.
-// The RainViewer zoom-7 tile spans about 107 km across its 512 px; the view's range is
-// whatever fraction of that tile is displayed.
-#define WX_RADAR_SOURCE_KM  106.7f
-#define WX_RADAR_RANGE_KM   (WX_RADAR_SOURCE_KM * (float)WX_RADAR_SIZE / (float)WX_RADAR_SOURCE_SIZE)
+// The radar's range now follows the live tile zoom, so it comes from the frame store
+// (wx_radar_range_km) rather than a constant here. The cloud product is a fixed crop.
 #define WX_CLOUD_RANGE_KM  200.0f
 
 static float weather_temp(float c) { return s_units == 2 ? c * 1.8f + 32.0f : c; }
@@ -954,7 +956,7 @@ static void build_weather(void) {
     else
         haveImage = wx_radar_front(&radarPixels, &frameTime, &rlat, &rlon, &version);
     const uint16_t *pixels = cloudMode ? cloudPixels : radarPixels;
-    const float rangeVal = dist_val(cloudMode ? WX_CLOUD_RANGE_KM : WX_RADAR_RANGE_KM);
+    const float rangeVal = dist_val(cloudMode ? WX_CLOUD_RANGE_KM : wx_radar_range_km());
     const char *rangeUnit = dist_unit_caps();
     char apt[72];
     if (haveImage && pixels && s_wxCanvas) {
@@ -1013,7 +1015,8 @@ static void build_weather(void) {
     };
     lv_obj_t *radarObjs[] = { s_wxCanvas, s_wxStatus, s_wxAirport, s_wxAttrib,
                               s_wxNorth, s_wxCenter,
-                              s_wxRings[0], s_wxRings[1], s_wxRings[2] };
+                              s_wxRings[0], s_wxRings[1], s_wxRings[2],
+                              s_wxZoomIn, s_wxZoomOut };
     for (lv_obj_t *o : forecastObjs) if (o) {
         if (forecastMode) lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
     }
@@ -1876,6 +1879,17 @@ void ui_splash_show(void) {
     lv_timer_set_repeat_count(t, 1);
 }
 
+// Step the tile zoom. The frames already held were rendered at the old ground scale, so
+// wx_radar_set_zoom drops them; the callback asks the network task to pull again straight
+// away rather than leaving an empty scope until the next scheduled refresh.
+static void wx_zoom_step(int delta) {
+    const int z = wx_radar_zoom() + delta;
+    if (z < WX_ZOOM_MIN || z > WX_ZOOM_MAX) return;
+    if (s_wxZoomCb) s_wxZoomCb(z);
+    else            wx_radar_set_zoom(z);
+    build_weather();                      // range caption and "acquiring" state
+}
+
 void ui_create(void) {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
@@ -2212,7 +2226,9 @@ void ui_create(void) {
     lv_obj_set_style_text_font(s_wxNorth, F12(), 0);
     lv_obj_set_style_text_color(s_wxNorth, UI_GREEN, 0);
     lv_label_set_text(s_wxNorth, "N");
-    lv_obj_align(s_wxNorth, LV_ALIGN_TOP_MID, 0, wxTop + UI_S(6));
+    // Just inside the outer ring rather than at the very top of the image: with the
+    // imagery full-bleed, the top of the image is also where the title sits.
+    lv_obj_align(s_wxNorth, LV_ALIGN_TOP_MID, 0, wxTop + UI_S(112));
     s_wxCenter = lv_label_create(wp);
     lv_obj_set_style_text_font(s_wxCenter, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(s_wxCenter, UI_INK, 0);
@@ -2229,8 +2245,41 @@ void ui_create(void) {
         const int lineH  = UI_S(22);                          // the label's box, not its font
         const int btnTop = SCREEN_H - UI_S(18) - UI_S(34);    // mode button, bottom-anchored
         int y = wxTop + WX_RADAR_SIZE + UI_S(4);
-        if (y + lineH > btnTop) y = btnTop - lineH;           // never tuck under the button
+        if (y + lineH > btnTop) y = btnTop - lineH - UI_S(6); // never tuck under the button
         lv_obj_align(s_wxAttrib, LV_ALIGN_TOP_MID, 0, y);
+    }
+
+    // Zoom on the left and right edges at mid height. Down beside the mode button they
+    // were clipped: twenty pixels off the bottom the panel circle is only about +/-118
+    // wide, and a 44 px pill at +/-116 hangs straight off the side of it. At mid height
+    // the disc is at full width and there is nothing else there.
+    {
+        struct { lv_obj_t **slot; const char *glyph; lv_align_t al; int dx; int delta; } zb[2] = {
+            { &s_wxZoomOut, LV_SYMBOL_MINUS, LV_ALIGN_LEFT_MID,   UI_S(14), -1 },
+            { &s_wxZoomIn,  LV_SYMBOL_PLUS,  LV_ALIGN_RIGHT_MID, -UI_S(14), +1 },
+        };
+        for (int i = 0; i < 2; ++i) {
+            lv_obj_t *b = lv_btn_create(wp);
+            lv_obj_set_size(b, UI_S(44), UI_S(44));
+            lv_obj_align(b, zb[i].al, zb[i].dx, 0);
+            lv_obj_set_ext_click_area(b, 14);
+            lv_obj_set_style_radius(b, 19, 0);
+            lv_obj_set_style_bg_color(b, UI_PANEL, 0);
+            lv_obj_set_style_bg_opa(b, 225, 0);
+            lv_obj_set_style_border_color(b, UI_GREEN, 0);
+            lv_obj_set_style_border_width(b, 1, 0);
+            lv_obj_set_style_border_opa(b, 170, 0);
+            lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLL_CHAIN);   // must not swipe the tileview
+            lv_obj_add_event_cb(b, [](lv_event_t *e) {
+                wx_zoom_step((int)(intptr_t)lv_event_get_user_data(e));
+            }, LV_EVENT_PRESSED, (void *)(intptr_t)zb[i].delta);
+            lv_obj_t *l = lv_label_create(b);
+            lv_obj_set_style_text_font(l, F14(), 0);
+            lv_obj_set_style_text_color(l, UI_GREEN, 0);
+            lv_label_set_text(l, zb[i].glyph);
+            lv_obj_center(l);
+            *zb[i].slot = b;
+        }
     }
 
     // Forecast mode: independent, aligned objects instead of a tiny text table.

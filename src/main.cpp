@@ -76,6 +76,9 @@ static uint32_t              g_idleDimMs = IDLE_DIM_MS;              // dim afte
 static bool                  g_showSweep = true;                     // rotating sweep line on/off (web/NVS)
 static int                   g_units = 0;                            // 0=Aviation 1=Metric 2=Imperial (web/NVS)
 static bool                  g_showAirports = true;
+// Set when the weather zoom changes: the tiles are on a five-minute schedule owned by
+// adsb_task, and waiting that out after a zoom would leave the screen blank.
+static volatile bool         g_wxRefetch = false;
 #if BOARD_HAS_SD
 // The card shares the SDMMC controller with the C6 radio, so it is worth being able
 // to turn it off without reflashing. On by default: the log and the photo cache are
@@ -349,6 +352,7 @@ static void adsb_task(void*) {
                     Serial.println("[weather] fetch failed; retrying in 60s");
                 }
             }
+            if (g_wxRefetch) { g_wxRefetch = false; nextWxRadarAt = nowMs; }
             if ((int32_t)(nowMs - nextWxRadarAt) >= 0) {
                 if (wx_radar_fetch(g_settings.homeLat, g_settings.homeLon)) {
                     g_wxRadarDirty = true;
@@ -1693,6 +1697,13 @@ static void handleView() {   // 0 radar, 1 list, 2 stats, 3 weather, 4 tracked, 
     // screen; that screen is gone and about took its place.
     if (g_web.hasArg("i")) ui_show_view(constrain((int)g_web.arg("i").toInt(), 0, 7));
     if (g_web.hasArg("wx")) ui_set_weather_mode(constrain((int)g_web.arg("wx").toInt(), 0, 2));
+    // Weather radar zoom, the same thing the +/- buttons on that screen do. Remote so the
+    // screen can be driven without a finger on the glass, like the rest of /view.
+    if (g_web.hasArg("wxz")) {
+        wx_radar_set_zoom(constrain((int)g_web.arg("wxz").toInt(), WX_ZOOM_MIN, WX_ZOOM_MAX));
+        g_wxRefetch = true;
+        ui_on_data_updated();
+    }
     if (g_web.hasArg("icon")) ui_preview_weather_icon(g_web.arg("icon").toInt());
     if (g_web.hasArg("mil")) radar::setMilitaryPreview(g_web.arg("mil").toInt() != 0);
     // Select the Nth nearest contact (-1 clears), so the detail card can be captured
@@ -1939,6 +1950,7 @@ void setup() {
     // PMIC. Touch (CST9217 indev) + AXP2101 come in later milestones.
     // Before display::begin(): that is what calls ui_create(), which builds the menu.
     ui_set_toggle_provider(radar::ROPT_COUNT + DEV_TOGGLE_N, devToggleLabel, devToggleGet, devToggleSet);
+    ui_set_wx_zoom_cb([](int z) { wx_radar_set_zoom(z); g_wxRefetch = true; });
 
     if (!display::begin()) {
         Serial.println("[!] display::begin() failed — check QSPI pins / power.");
@@ -2135,6 +2147,11 @@ void setup() {
     // Health snapshot. Exists because the interesting numbers (contiguous internal heap,
     // PSRAM headroom) previously only reached serial, which needs a cable attached.
     g_web.on("/diag", []() {
+        // Painted pixels in the fetched tile vs painted pixels that survived the crop and
+        // the circular mask. "No weather" and "the decode produced nothing" look identical
+        // on the glass, and on the P4 the Serial log never reaches the USB port.
+        uint32_t wxSrcPx = 0, wxDrawnPx = 0; int wxW = 0, wxH = 0;
+        wx_radar_last_decode(&wxSrcPx, &wxDrawnPx, &wxW, &wxH);
         float sfps = 0, savg = 0, smax = 0; uint32_t sdraw = 0;
         radar::sweepPerf(&sfps, &sdraw, &savg, &smax);
         uint32_t sdHit = 0, sdApp = 0, sdRdE = 0;
@@ -2144,7 +2161,7 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
         lv_mem_monitor_t lvmem;
         lv_mem_monitor(&lvmem);      // LVGL pool headroom: exhausting it hangs the UI core
                                      // outright -- LVGL's assert handler is a bare while(1)
-        char j[880];
+        char j[980];
         snprintf(j, sizeof(j),
                  "{\"fw\":\"%s\",\"uptime_s\":%lu,\"heap\":%u,\"heap_min\":%u,"
                  "\"heap_largest\":%u,\"psram\":%u,\"aircraft\":%d,\"max_on_screen\":%d,"
@@ -2153,6 +2170,7 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
                  "\"lbl_us\":%u,\"lbl_moves\":%u,\"lbl_seen\":%u,"
                  "\"sd\":\"%s\",\"sd_recs\":%u,\"sd_hit\":%u,\"sd_app\":%u,\"sd_rderr\":%u,\"sd_photos\":%u,\"sd_on\":%u,\"photo\":\"%s\","
                  "\"q_lat\":%.5f,\"q_lon\":%.5f,"
+                 "\"wx_src\":%u,\"wx_drawn\":%u,\"wx_w\":%d,\"wx_h\":%d,\"wx_z\":%d,"
                  "\"fps\":%.1f,\"draw_us\":%u,\"step_avg\":%.2f,\"step_max\":%.2f,\"frame_ms\":%u,"
                  "\"lvgl_ms\":%.1f,\"rest_ms\":%.1f}",
                  FW_VERSION, (unsigned long)(millis() / 1000),
@@ -2175,7 +2193,8 @@ sd_counters(&sdHit, &sdApp, &sdRdE);
                  0u,
 #endif
                  photo_note_get(),
-                 g_adsb.queryLat(), g_adsb.queryLon(), sfps, sdraw, savg, smax, (unsigned)radar::sweepFrameMs(), g_loopLvglMs, g_loopRestMs);
+                 g_adsb.queryLat(), g_adsb.queryLon(),
+                 wxSrcPx, wxDrawnPx, wxW, wxH, wx_radar_zoom(), sfps, sdraw, savg, smax, (unsigned)radar::sweepFrameMs(), g_loopLvglMs, g_loopRestMs);
         g_web.send(200, "application/json", j);
     });
     g_web.on("/fwupd", handleFwUpd);

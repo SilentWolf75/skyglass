@@ -29,6 +29,14 @@ static bool ensure_decoder(void) {
     return true;
 }
 
+static int s_lastW = 0, s_lastH = 0;
+void wx_radar_last_decode(uint32_t *sourcePx, uint32_t *drawnPx, int *w, int *h) {
+    if (sourcePx) *sourcePx = s_sourcePixels;
+    if (drawnPx)  *drawnPx  = s_decodedPixels;
+    if (w) *w = s_lastW;
+    if (h) *h = s_lastH;
+}
+
 // ---- NEXRAD recolour -----------------------------------------------------------------
 // RainViewer serves its "Universal Blue" ramp and nothing else: the colour-scheme index
 // in the tile URL is ignored now -- every scheme from 0 to 8 returns a byte-identical
@@ -44,15 +52,19 @@ static bool ensure_decoder(void) {
 #define WXC(r, g, b) (uint16_t)(((b) >> 3) | (((g) >> 2) << 5) | (((r) >> 3) << 11))
 
 static const uint16_t kNexrad[16] = {
-    WXC(0xB4, 0xF0, 0xB4), WXC(0x80, 0xE8, 0x80), WXC(0x4C, 0xE0, 0x4C), WXC(0x02, 0xFD, 0x02),
-    WXC(0x01, 0xE0, 0x01), WXC(0x01, 0xC5, 0x01), WXC(0x00, 0xA8, 0x00), WXC(0x00, 0x8E, 0x00),
-    WXC(0xFD, 0xF8, 0x02), WXC(0xF0, 0xD0, 0x00), WXC(0xE5, 0xBC, 0x00), WXC(0xFD, 0x95, 0x00),
-    WXC(0xFD, 0x50, 0x00), WXC(0xFD, 0x00, 0x00), WXC(0xBC, 0x00, 0x00), WXC(0xF8, 0x00, 0xFD),
+    // The National Weather Service green band runs light-to-dark as the return
+    // strengthens, and only then jumps to yellow. Getting that direction backwards makes
+    // the picture look like a heat map rather than a radar.
+    WXC(0x6E, 0xFF, 0x6E), WXC(0x35, 0xFF, 0x35), WXC(0x02, 0xFD, 0x02), WXC(0x01, 0xE1, 0x01),
+    WXC(0x01, 0xC5, 0x01), WXC(0x00, 0xAC, 0x00), WXC(0x00, 0x9A, 0x00), WXC(0x00, 0x8E, 0x00),
+    WXC(0xFD, 0xF8, 0x02), WXC(0xF2, 0xD8, 0x00), WXC(0xE5, 0xBC, 0x00), WXC(0xFD, 0x95, 0x00),
+    WXC(0xFD, 0x60, 0x00), WXC(0xFD, 0x00, 0x00), WXC(0xBC, 0x00, 0x00), WXC(0xF8, 0x00, 0xFD),
 };
 // The tan fringe around every echo is the weakest band, not snow: it is present
 // identically with RainViewer's snow option on and off (that parameter is ignored too),
-// and it was showing over Kansas in August. Palest green, one step below the ladder.
-static const uint16_t kNexradTrace = WXC(0xD8, 0xFF, 0xD8);
+// and it was showing over Kansas in August. Rendered dark so it recedes to a thin edge:
+// as a pale colour it covered a third of the screen and washed the whole picture out.
+static const uint16_t kNexradTrace = WXC(0x1E, 0x46, 0x20);
 
 static inline uint16_t nexrad565(uint8_t r, uint8_t g, uint8_t b) {
     if (r < 8 && g < 8 && b < 8) return 0;                 // nothing here
@@ -249,12 +261,14 @@ bool wx_radar_fetch(double lat, double lon) {
     s_pending = wanted - 1;
 
     char url[320];
-    snprintf(url, sizeof(url), "%s%s/512/7/%.5f/%.5f/2/1_1.png",
-             host, path, lat, lon);
+    snprintf(url, sizeof(url), "%s%s/%d/%d/%.5f/%.5f/2/1_1.png",
+             host, path, WX_RADAR_SOURCE_SIZE, wx_radar_zoom(), lat, lon);
     // Stream the tile straight into PSRAM (net_fetch): a 512px PNG can be 100+ KB, and an
     // internal-heap String that big starves the live feed's TLS handshake.
     uint8_t *image = nullptr; size_t imageLen = 0;
-    if (!net_fetch_psram(url, ADSB_USER_AGENT, &image, &imageLen, 260000, 3500, 8500)) {
+    // A 768 px tile runs about 220 KB and a 1024 about 350; the old 260 KB ceiling was
+    // sized for the 512 px one and would reject anything bigger as over-length.
+    if (!net_fetch_psram(url, ADSB_USER_AGENT, &image, &imageLen, 480000, 3500, 8500)) {
         Serial.println("[wxradar] tile fetch failed"); return false;
     }
     memset(wx_radar_back_buffer(), 0, WX_RADAR_SIZE * WX_RADAR_SIZE * sizeof(uint16_t));
@@ -267,6 +281,7 @@ bool wx_radar_fetch(double lat, double lon) {
         Serial.printf("[wxradar] PNG open error %d\n", opened);
         heap_caps_free(image); return false;
     }
+    s_lastW = s_png->getWidth(); s_lastH = s_png->getHeight();
     Serial.printf("[wxradar] PNG %dx%d bpp=%d type=%d alpha=%d\n",
                   s_png->getWidth(), s_png->getHeight(), s_png->getBpp(),
                   s_png->getPixelType(), s_png->hasAlpha());

@@ -19,6 +19,30 @@ static int       s_cap = 0;            // slots successfully allocated
 static uint16_t *s_back = nullptr;     // decode scratch
 static uint32_t  s_version = 0;
 static double    s_lat = 0, s_lon = 0;
+static int       s_zoom = WX_ZOOM_DEF;
+
+int wx_radar_zoom(void) { return s_zoom; }
+
+float wx_radar_range_km(void) {
+    // 106.7 km across 512 px at zoom 7; every step up halves it.
+    float km = 106.7f * (float)WX_RADAR_SIZE / 512.0f;
+    for (int z = 7; z < s_zoom; ++z) km *= 0.5f;
+    for (int z = s_zoom; z < 7; ++z) km *= 2.0f;
+    return km;
+}
+
+void wx_radar_set_zoom(int z) {
+    if (z < WX_ZOOM_MIN) z = WX_ZOOM_MIN;
+    if (z > WX_ZOOM_MAX) z = WX_ZOOM_MAX;
+    if (z == s_zoom) return;
+    std::lock_guard<std::mutex> lock(s_mutex);
+    s_zoom = z;
+    // Every held frame is at the old scale. Keeping them would animate a loop that jumps
+    // between two ground scales, which reads as the map twitching rather than as weather.
+    s_count = 0;
+    for (int i = 0; i < s_cap; ++i) s_frames[i].time = 0;
+    ++s_version;
+}
 
 static uint16_t *alloc_pixels(void) {
     const size_t bytes = WX_RADAR_SIZE * WX_RADAR_SIZE * sizeof(uint16_t);
