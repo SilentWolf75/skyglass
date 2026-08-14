@@ -17,3 +17,7 @@ dist/
 
 # Secrets (WiFi creds live in NVS on the device, never in the repo)
 secrets.h
+
+# Python bytecode from the tools/ scripts
+__pycache__/
+*.pyc
