@@ -29,6 +29,51 @@ static bool ensure_decoder(void) {
     return true;
 }
 
+// ---- NEXRAD recolour -----------------------------------------------------------------
+// RainViewer serves its "Universal Blue" ramp and nothing else: the colour-scheme index
+// in the tile URL is ignored now -- every scheme from 0 to 8 returns a byte-identical
+// PNG -- so a National Weather Service look has to be produced here, from the pixels we
+// are given.
+//
+// The source ramp, read off a storm tile: #88DDEE (weakest) darkening through blue to
+// #004768, then jumping to #FFEE00 yellow, through orange, to #5D0000 maroon at the top.
+// A separate low-saturation beige family fringes every echo -- the weakest returns.
+// Mapping the blue half onto greens rather than onto NWS's own cyan/blue low end is
+// deliberate: that blue covers light *and* moderate rain, and leaving it blue is
+// precisely what stops the screen looking like a weather radar.
+#define WXC(r, g, b) (uint16_t)(((b) >> 3) | (((g) >> 2) << 5) | (((r) >> 3) << 11))
+
+static const uint16_t kNexrad[16] = {
+    WXC(0xB4, 0xF0, 0xB4), WXC(0x80, 0xE8, 0x80), WXC(0x4C, 0xE0, 0x4C), WXC(0x02, 0xFD, 0x02),
+    WXC(0x01, 0xE0, 0x01), WXC(0x01, 0xC5, 0x01), WXC(0x00, 0xA8, 0x00), WXC(0x00, 0x8E, 0x00),
+    WXC(0xFD, 0xF8, 0x02), WXC(0xF0, 0xD0, 0x00), WXC(0xE5, 0xBC, 0x00), WXC(0xFD, 0x95, 0x00),
+    WXC(0xFD, 0x50, 0x00), WXC(0xFD, 0x00, 0x00), WXC(0xBC, 0x00, 0x00), WXC(0xF8, 0x00, 0xFD),
+};
+// The tan fringe around every echo is the weakest band, not snow: it is present
+// identically with RainViewer's snow option on and off (that parameter is ignored too),
+// and it was showing over Kansas in August. Palest green, one step below the ladder.
+static const uint16_t kNexradTrace = WXC(0xD8, 0xFF, 0xD8);
+
+static inline uint16_t nexrad565(uint8_t r, uint8_t g, uint8_t b) {
+    if (r < 8 && g < 8 && b < 8) return 0;                 // nothing here
+    const uint8_t mx = (r > g ? (r > b ? r : b) : (g > b ? g : b));
+    const uint8_t mn = (r < g ? (r < b ? r : b) : (g < b ? g : b));
+    if (mx - mn < 70 && mx > 60) return kNexradTrace;      // tan fringe = trace returns
+    if (r > 200 && b > 200) return kNexrad[15];            // rare magenta caps = extreme
+    int t;                                                  // 0..1023 up the scale
+    if (r >= 100 && r > b + 40) {                          // warm half
+        t = (g >= 8) ? ((238 - (int)g) * 665) / 238        // yellow -> orange -> red
+                     : 665 + ((255 - (int)r) * 335) / 162; // red -> deep maroon
+        if (t < 0) t = 0;
+        if (t > 1000) t = 1000;
+        return kNexrad[8 + (t * 8) / 1001];
+    }
+    t = ((221 - (int)g) * 1000) / 150;                     // cool half, lightest first
+    if (t < 0) t = 0;
+    if (t > 1000) t = 1000;
+    return kNexrad[(t * 8) / 1001];
+}
+
 static int radar_png_line(PNGDRAW *draw) {
     uint16_t *dst = wx_radar_back_buffer();
     const int crop = (WX_RADAR_SOURCE_SIZE - WX_RADAR_SIZE) / 2;
@@ -37,11 +82,17 @@ static int radar_png_line(PNGDRAW *draw) {
     if (draw->iPixelType == PNG_PIXEL_TRUECOLOR_ALPHA && draw->iBpp == 8) {
         const uint8_t *src = draw->pPixels;
         for (int x = 0; x < draw->iWidth; ++x, src += 4) {
-            line[x] = (uint16_t)((src[2] >> 3) | ((src[1] >> 2) << 5) |
-                                 ((src[0] >> 3) << 11));
+            line[x] = (src[3] < 8) ? 0 : nexrad565(src[0], src[1], src[2]);
         }
     } else {
         s_png->getLineAsRGB565(draw, line, PNG_RGB565_LITTLE_ENDIAN, 0x00000000);
+        for (int x = 0; x < draw->iWidth; ++x) {
+            const uint16_t v = line[x];
+            if (!v) continue;
+            line[x] = nexrad565((uint8_t)(((v >> 11) & 0x1F) << 3),
+                                (uint8_t)(((v >> 5) & 0x3F) << 2),
+                                (uint8_t)((v & 0x1F) << 3));
+        }
     }
     for (int x = 0; x < draw->iWidth; ++x) if (line[x]) {
         ++s_sourcePixels;
