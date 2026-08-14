@@ -79,6 +79,19 @@ static bool                  g_showAirports = true;
 // Set when the weather zoom changes: the tiles are on a five-minute schedule owned by
 // adsb_task, and waiting that out after a zoom would leave the screen blank.
 static volatile bool         g_wxRefetch = false;
+
+// Apply a weather-radar zoom and remember it. Without the NVS write the view snapped back
+// to the default on every reboot, which is not what "zoom" means anywhere else on the
+// device -- the scope's own range is persisted the same way.
+static void setWxZoom(int z, bool save) {
+    wx_radar_set_zoom(z);
+    g_wxRefetch = true;
+    if (!save) return;
+    Preferences p;
+    p.begin("capsuleradar", false);
+    p.putInt("wxzoom", wx_radar_zoom());
+    p.end();
+}
 #if BOARD_HAS_SD
 // The card shares the SDMMC controller with the C6 radio, so it is worth being able
 // to turn it off without reflashing. On by default: the log and the photo cache are
@@ -470,6 +483,7 @@ static void loadSettings() {
         pr.putBool(radar::optInfo(idx).key, on);
         pr.end();
     });
+    wx_radar_set_zoom(p.getInt("wxzoom", WX_ZOOM_DEF));
     g_proximityKm      = p.getFloat("proxkm", 0.0f);
     g_useGps           = p.getBool("usegps", false);
     g_trailLen         = p.getInt("traillen", 2);
@@ -1700,8 +1714,7 @@ static void handleView() {   // 0 radar, 1 list, 2 stats, 3 weather, 4 tracked, 
     // Weather radar zoom, the same thing the +/- buttons on that screen do. Remote so the
     // screen can be driven without a finger on the glass, like the rest of /view.
     if (g_web.hasArg("wxz")) {
-        wx_radar_set_zoom(constrain((int)g_web.arg("wxz").toInt(), WX_ZOOM_MIN, WX_ZOOM_MAX));
-        g_wxRefetch = true;
+        setWxZoom(constrain((int)g_web.arg("wxz").toInt(), WX_ZOOM_MIN, WX_ZOOM_MAX), true);
         ui_on_data_updated();
     }
     if (g_web.hasArg("icon")) ui_preview_weather_icon(g_web.arg("icon").toInt());
@@ -1950,7 +1963,7 @@ void setup() {
     // PMIC. Touch (CST9217 indev) + AXP2101 come in later milestones.
     // Before display::begin(): that is what calls ui_create(), which builds the menu.
     ui_set_toggle_provider(radar::ROPT_COUNT + DEV_TOGGLE_N, devToggleLabel, devToggleGet, devToggleSet);
-    ui_set_wx_zoom_cb([](int z) { wx_radar_set_zoom(z); g_wxRefetch = true; });
+    ui_set_wx_zoom_cb([](int z) { setWxZoom(z, true); });
 
     if (!display::begin()) {
         Serial.println("[!] display::begin() failed — check QSPI pins / power.");

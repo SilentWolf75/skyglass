@@ -2207,7 +2207,13 @@ void ui_create(void) {
     lv_obj_align(s_wxStatus, LV_ALIGN_TOP_MID, 0,
                  wxTop + WX_RADAR_SIZE / 2 - UI_S(10));
 
-    const int ringSize[3] = { WX_RADAR_SIZE, WX_RADAR_SIZE * 2 / 3, WX_RADAR_SIZE / 3 };
+    // The outer ring used to sit well inside the panel because the imagery was inset.
+    // Full-bleed, a ring at exactly the image diameter lands on the bezel and gets clipped
+    // unevenly -- an arc across the top, nothing at the bottom. Pull it in so it closes.
+    const int ringInset = UI_S(14);
+    const int ringSize[3] = { WX_RADAR_SIZE - ringInset,
+                              (WX_RADAR_SIZE - ringInset) * 2 / 3,
+                              (WX_RADAR_SIZE - ringInset) / 3 };
     const int arcW = (SCREEN_W >= 600) ? 2 : 1;
     for (int i = 0; i < 3; ++i) {
         s_wxRings[i] = lv_arc_create(wp);
