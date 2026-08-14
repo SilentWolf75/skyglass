@@ -132,7 +132,7 @@ bool display_p4_begin(void) {
     return true;
 }
 
-void display_p4_backlight(bool on) {
+void display_p4_backlight_level(uint8_t level) {
     if (PIN_LCD_BL < 0) return;
     static bool inited = false;
     if (!inited) {
@@ -153,10 +153,13 @@ void display_p4_backlight(bool on) {
         inited = true;
     }
     // ACTIVE LOW. The vendor test defines TEST_LCD_BK_LIGHT_ON_LEVEL (0), so driving the
-    // pin high — the obvious reading of "on" — is what keeps the panel dark.
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, on ? 0 : 255);
+    // pin high — the obvious reading of "on" — is what keeps the panel dark. That also
+    // means the duty is inverted: full brightness is duty 0, off is duty 255.
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 255 - (uint32_t)level);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }
+
+void display_p4_backlight(bool on) { display_p4_backlight_level(on ? 255 : 0); }
 
 // Screenshots. The DPI panel's framebuffer *is* what the panel is scanning out, so a
 // capture is just a read of it -- no separate mirror buffer needed as on the S3. The

@@ -76,9 +76,11 @@ bool begin() {
 
 void loop() { lv_timer_handler(); }
 
-// Backlight is a PWM output here rather than a panel command, so brightness maps onto
-// the LEDC duty cycle. Anything above zero counts as on until a duty API is added.
-void setBrightness(uint8_t v) { display_p4_backlight(v > 0); }
+// Backlight is a PWM output here rather than a panel command, so brightness is the LEDC
+// duty cycle. This used to collapse to on/off, which meant the brightness slider did
+// nothing and the idle dim looked broken: the timer fired and applyBrightness() ran, but
+// every non-zero level came out as full brightness.
+void setBrightness(uint8_t v) { display_p4_backlight_level(v); }
 
 // Rotation is not implemented for DSI yet: the S3 path rotates in the flush callback by
 // transposing blocks, which does not apply to a panel that owns its own framebuffer.
