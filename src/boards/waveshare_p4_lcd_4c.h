@@ -59,6 +59,14 @@
 // cross-confirmed between displays_config.h and the ESP-IDF panel test in the demo.
 #define PIN_LCD_RST         27             // [VENDOR] displays_config.h .lcd_rst
 #define PIN_LCD_BL          26             // [VENDOR] TEST_PIN_NUM_BK_LIGHT
+// This panel's backlight driver stops conducting well above zero. Measured on the device
+// by stepping the duty with the auto-dim disabled: 25% (64) is visibly dim and correct,
+// 20% (51) and 15% (38) are both indistinguishable from off. So the cut-in sits between
+// 51 and 64: the idle level is 64 rather than the S3's 25, and anything non-zero is
+// floored at 64 so the brightness slider cannot be dragged into the dead zone by hand.
+// Zero still means off, for face-down sleep and quiet-hours mode 2.
+#define BRIGHTNESS_IDLE     64
+#define BACKLIGHT_MIN_ON    64
 #define PIN_TP_INT          -1             // [VENDOR] GPIO_NUM_NC - not connected
 #define PIN_TP_RST          23             // [VENDOR] gt911.h EXAMPLE_PIN_NUM_TOUCH_RST
 // [VENDOR] gt911.cpp sets swap_xy = 0, mirror_x = 0, mirror_y = 0 for this panel.

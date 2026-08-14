@@ -46,7 +46,17 @@ static const float RANGE_STEPS_KM[] = {1.60934f, 4.82803f, 10.0f, 20.0f, 30.0f, 
 #define LV_COLOR_DEPTH_BITS 16
 #define BRIGHTNESS_DEFAULT  200            // 0..255, panel brightness via cmd 0x51
 #define TZ_STR              "CET-1CEST,M3.5.0,M10.5.0/3"  // POSIX TZ (Spain) for local time/date
-#define BRIGHTNESS_IDLE     25             // dimmed after no touch for IDLE_DIM_MS
+// Dimmed level after no touch for IDLE_DIM_MS. Per-board, because it depends on where
+// the panel's backlight actually stops conducting -- see the P4 header.
+#ifndef BRIGHTNESS_IDLE
+#  define BRIGHTNESS_IDLE   25
+#endif
+// Lowest level the backlight will still light at. Anything between 1 and this is a dead
+// zone: the screen reads as off while the firmware thinks it is dimmed. Zero is left
+// alone -- it means "off" on purpose (face-down sleep, quiet-hours mode 2).
+#ifndef BACKLIGHT_MIN_ON
+#  define BACKLIGHT_MIN_ON  1
+#endif
 #define IDLE_DIM_MS         20000          // dim the screen after this long without a touch
 
 // ---------- ADS-B API (free, non-commercial) ----------

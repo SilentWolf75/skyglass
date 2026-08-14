@@ -80,7 +80,12 @@ void loop() { lv_timer_handler(); }
 // duty cycle. This used to collapse to on/off, which meant the brightness slider did
 // nothing and the idle dim looked broken: the timer fired and applyBrightness() ran, but
 // every non-zero level came out as full brightness.
-void setBrightness(uint8_t v) { display_p4_backlight_level(v); }
+void setBrightness(uint8_t v) {
+    // Zero is a real "off" and must pass through; everything else is lifted to the
+    // lowest level this backlight will actually light at.
+    if (v > 0 && v < BACKLIGHT_MIN_ON) v = BACKLIGHT_MIN_ON;
+    display_p4_backlight_level(v);
+}
 
 // Rotation is not implemented for DSI yet: the S3 path rotates in the flush callback by
 // transposing blocks, which does not apply to a panel that owns its own framebuffer.
