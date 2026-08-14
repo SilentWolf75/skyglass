@@ -287,6 +287,7 @@ static void adsb_task(void*) {
                 // healthy through isolated misses and warn only after a sustained outage.
                 if (g_adsb.poll(fresh)) {
                     Serial.printf("[adsb] fetched %u aircraft\n", (unsigned)fresh.size());
+                    ui_set_feed_source(g_adsb.lastPollWasLocal() ? 1 : 0);
                     failCount = 0;
                     g_feedOk = true;
                     const uint32_t receivedMs = millis();
@@ -1686,11 +1687,11 @@ static void handleShot() {
     g_web.sendContent("", 0);
 }
 
-static void handleView() {   // pick a screen (0 radar, 1 list, 2 stats, 3 weather, 4 tracked, 5 clock, 6 about)
+static void handleView() {   // 0 radar, 1 list, 2 stats, 3 weather, 4 tracked, 5 clock, 6 about, 7 settings
     // 0..6: ui_show_view() ignores anything above 6, so accepting 7 here only made
     // /view?i=7 look like it worked. The old 7 was about, back when 6 was the fires
     // screen; that screen is gone and about took its place.
-    if (g_web.hasArg("i")) ui_show_view(constrain((int)g_web.arg("i").toInt(), 0, 6));
+    if (g_web.hasArg("i")) ui_show_view(constrain((int)g_web.arg("i").toInt(), 0, 7));
     if (g_web.hasArg("wx")) ui_set_weather_mode(constrain((int)g_web.arg("wx").toInt(), 0, 2));
     if (g_web.hasArg("icon")) ui_preview_weather_icon(g_web.arg("icon").toInt());
     if (g_web.hasArg("mil")) radar::setMilitaryPreview(g_web.arg("mil").toInt() != 0);
@@ -1824,6 +1825,72 @@ static void handleUpdateUpload() {
     }
 }
 
+// ---- On-device settings menu ---------------------------------------------------------
+// What the device's own menu offers is generated from this list rather than hand-placed
+// buttons, so it does not quietly become a subset of the web page again. Rows 0..
+// ROPT_COUNT-1 come straight out of radar_view's option table; the rest are the display
+// and sound switches that used to need a browser.
+//
+// Every setter writes the same NVS key its web handler writes and applies the same live
+// effect, so a change made on the glass and a change made in a browser are the same
+// change -- either one shows up correctly in the other place after a reboot.
+static void devNvsBool(const char *key, bool v) {
+    Preferences p;
+    p.begin("capsuleradar", false);
+    p.putBool(key, v);
+    p.end();
+}
+
+struct DevToggle {
+    const char *label;
+    bool      (*get)(void);
+    void      (*set)(bool);
+};
+
+// Ordered least to most disruptive: the display switches are safe to poke at while
+// watching the scope, the last three change how the device boots or updates itself.
+static const DevToggle DEV_TOGGLES[] = {
+    { "SWEEP",       [] { return g_showSweep; },
+                     [](bool v) { g_showSweep = v; radar::setSweepEnabled(v); devNvsBool("sweep", v); } },
+    { "TYPE ICONS",  [] { return g_typeIcons; },
+                     [](bool v) { g_typeIcons = v; radar::setTypeIcons(v); devNvsBool("typeicons", v); } },
+    { "AIRPORTS",    [] { return g_showAirports; },
+                     [](bool v) { g_showAirports = v; radar::setAirportsEnabled(v); devNvsBool("airports", v); } },
+    { "MAP",         [] { return g_mapBg; },
+                     [](bool v) { g_mapBg = v; devNvsBool("mapbg", v);
+                                  if (!v) radar::update(g_snap, g_settings); } },
+    { "HIDE GND",    [] { return g_hideGround; },
+                     [](bool v) { g_hideGround = v; devNvsBool("hideground", v); } },
+    { "MIL ONLY",    [] { return g_milOnly; },
+                     [](bool v) { g_milOnly = v; devNvsBool("milonly", v); } },
+    { "MUTE",        [] { return g_muted; },
+                     [](bool v) { g_muted = v; audio_set_muted(v); devNvsBool("mute", v); } },
+    { "AUTO CHECK",  [] { return updater_auto_check(); },
+                     [](bool v) { updater_set_auto_check(v); } },
+    { "AUTO UPDATE", [] { return updater_auto_install(); },
+                     [](bool v) { updater_set_auto_install(v); } },
+};
+static const int DEV_TOGGLE_N = (int)(sizeof(DEV_TOGGLES) / sizeof(DEV_TOGGLES[0]));
+
+// The menu is one list to the UI: radar options first, then the rows above.
+static const char *devToggleLabel(int i) {
+    if (i < radar::ROPT_COUNT) return radar::optInfo(i).shortLabel;
+    const int j = i - radar::ROPT_COUNT;
+    return (j >= 0 && j < DEV_TOGGLE_N) ? DEV_TOGGLES[j].label : "";
+}
+
+static bool devToggleGet(int i) {
+    if (i < radar::ROPT_COUNT) return radar::optEnabled(i);
+    const int j = i - radar::ROPT_COUNT;
+    return (j >= 0 && j < DEV_TOGGLE_N) ? DEV_TOGGLES[j].get() : false;
+}
+
+static void devToggleSet(int i, bool on) {
+    if (i < radar::ROPT_COUNT) { radar::setOptEnabled(i, on); return; }   // persists via the callback
+    const int j = i - radar::ROPT_COUNT;
+    if (j >= 0 && j < DEV_TOGGLE_N) DEV_TOGGLES[j].set(on);
+}
+
 void setup() {
     Serial.begin(115200);
     delay(200);
@@ -1870,6 +1937,9 @@ void setup() {
     // CO5300 AMOLED over QSPI + LVGL draw buffers in PSRAM, then a hello screen.
     // The panel is powered from the always-on DC1 rail, so it lights without the
     // PMIC. Touch (CST9217 indev) + AXP2101 come in later milestones.
+    // Before display::begin(): that is what calls ui_create(), which builds the menu.
+    ui_set_toggle_provider(radar::ROPT_COUNT + DEV_TOGGLE_N, devToggleLabel, devToggleGet, devToggleSet);
+
     if (!display::begin()) {
         Serial.println("[!] display::begin() failed — check QSPI pins / power.");
     }

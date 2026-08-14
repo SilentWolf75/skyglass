@@ -11,6 +11,10 @@ void ui_show_view(int idx);      // 0 radar, 1 list, 2 stats, 3 weather, 4 track
 void ui_set_status(bool wifiUp, bool feedOk, int rssi, const char *clock);  // HUD: signal bars (count=RSSI, colour: red=down, amber=stale feed, white=ok) + clock
 void ui_set_battery(int pct, bool charging, bool present);  // top HUD battery indicator
 void ui_set_date(const char *date);  // top HUD date line (e.g. "08 Jun 2026")
+// Which feed the last poll actually came from: 0 internet, 1 the local receiver, -1
+// not known yet. Worth showing -- the two answer with different skies, and there is no
+// other way to tell from the device which one you are looking at.
+void ui_set_feed_source(int src);
 void ui_set_netinfo(const char *line);  // stats view footer: how to reach the config page
 void ui_set_gps(int state, int sats);   // GPS indicator: state 0=off/hidden 1=acquiring 2=fix; HUD icon + Stats line
 void ui_splash_show(void);  // branded boot splash (auto-fades, covers init time)
@@ -29,3 +33,13 @@ void ui_set_weather_forecast(bool forecast); // false = WX radar, true = 3-day f
 void ui_set_weather_mode(int mode);          // 0 = WX radar, 1 = sat clouds, 2 = 3-day forecast
 void ui_preview_weather_icon(int wmoCode);   // diagnostic: force the glyph set to one code
 void ui_show_flash_screen(const char *status, int pct); // Full-screen firmware flashing progress screen
+
+// ---- On-device settings menu --------------------------------------------------------
+// The menu on the SETTINGS & STATS screen is generated from a list the firmware supplies
+// rather than hand-placed buttons, so it stays in step with the web page instead of being
+// a hand-maintained subset of it. main.cpp owns the settings and their NVS keys; ui.cpp
+// only draws rows and reports taps back by index.
+typedef bool (*UiToggleGet)(int idx);
+typedef void (*UiToggleSet)(int idx, bool on);
+typedef const char *(*UiToggleLabel)(int idx);
+void ui_set_toggle_provider(int count, UiToggleLabel label, UiToggleGet get, UiToggleSet set);

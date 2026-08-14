@@ -51,6 +51,7 @@ LV_FONT_DECLARE(montserrat_64_digits);
 
 static lv_obj_t *s_tileRadar = nullptr, *s_tileList = nullptr, *s_tileStats = nullptr, *s_tileWeather = nullptr;
 static lv_obj_t *s_tileClock = nullptr, *s_tileTracked = nullptr;
+static lv_obj_t *s_tileSettings = nullptr;   // the toggles; stats keeps its own screen
 static lv_obj_t *s_trkTitle = nullptr, *s_trkRoute = nullptr, *s_trkBar = nullptr;
 static lv_obj_t *s_trkFrom = nullptr, *s_trkTo = nullptr, *s_trkPct = nullptr;
 static lv_obj_t *s_trkStats = nullptr, *s_trkEta = nullptr, *s_trkHint = nullptr;
@@ -75,6 +76,43 @@ static void set_wx_icon(lv_obj_t *o, int code, bool night) {
 static lv_obj_t *s_card = nullptr, *s_cardTitle = nullptr, *s_cardL = nullptr, *s_cardR = nullptr;
 static lv_obj_t *s_cardRoute = nullptr;
 static lv_obj_t *s_cardHist  = nullptr;   // "seen 3x, closest 0.8 nm" (own row, see below)
+
+// ---- on-device settings menu --------------------------------------------------------
+// Supplied by the firmware (see ui_set_toggle_provider). Left null in the simulator,
+// which has no NVS and no globals to flip; the menu then falls back to the radar options,
+// which radar_view can answer for on its own.
+static int           s_togCount = 0;
+static UiToggleLabel s_togLabel = nullptr;
+static UiToggleGet   s_togGet   = nullptr;
+static UiToggleSet   s_togSet   = nullptr;
+static lv_obj_t     *s_togBtn[28];        // buttons, so a tap can restyle its neighbours
+static int           s_togBtnN  = 0;
+
+void ui_set_toggle_provider(int count, UiToggleLabel label, UiToggleGet get, UiToggleSet set) {
+    s_togCount = count; s_togLabel = label; s_togGet = get; s_togSet = set;
+}
+
+// On reads as a filled pill, off as an outline: an outline-only difference between two
+// similar colours is hard to scan down a list of seventeen, and unreadable at arm's
+// length, which is where this device usually sits.
+//
+// The fill is the accent at 28% over the near-black panel, not the accent itself. A dozen
+// pills flooded with full-brightness cyan on an AMOLED is genuinely hard to look at and
+// leaves the label fighting its own background; a tint reads just as clearly as "filled"
+// while keeping bright text on a dark ground, which is the whole visual language of the
+// rest of the UI.
+static void tog_style(lv_obj_t *btn, bool on) {
+    lv_obj_set_style_bg_color(btn, on ? UI_CYAN : UI_PANEL, 0);
+    lv_obj_set_style_bg_opa(btn, on ? LV_OPA_30 : LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(btn, on ? UI_CYAN : UI_DIM, 0);
+    lv_obj_t *l = lv_obj_get_child(btn, 0);
+    if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
+}
+
+static int  tog_count(void)            { return s_togCount ? s_togCount : radar::ROPT_COUNT; }
+static const char *tog_label(int i)    { return s_togLabel ? s_togLabel(i) : radar::optInfo(i).shortLabel; }
+static bool tog_get(int i)             { return s_togGet ? s_togGet(i) : radar::optEnabled(i); }
+static void tog_set(int i, bool on)    { if (s_togSet) s_togSet(i, on); else radar::setOptEnabled(i, on); }
 static lv_obj_t *s_cardAirline = nullptr;
 static lv_obj_t *s_vesselCard = nullptr, *s_vesselTitle = nullptr, *s_vesselBody = nullptr;
 static bool      s_vesselShown = false;
@@ -740,6 +778,12 @@ static void build_list(void) {
     }
 }
 
+static lv_obj_t *s_statsVer = nullptr;
+static int s_feedSrc = -1;      // 0 internet, 1 local receiver, -1 unknown
+// Assignment only: this is called from the feed task on the other core, and touching
+// LVGL from there is how you corrupt the display list.
+void ui_set_feed_source(int src) { s_feedSrc = src; }
+
 static void build_stats(void) {
     if (!s_statsLbl) return;
     const int n = radar::count();
@@ -756,26 +800,50 @@ static void build_stats(void) {
     char altH[16];
     fmt_alt(altH, sizeof(altH), (highest > -1e8f) ? highest : 0.0f, false);
     const int ships = vessel_count();
-    char extra[64] = "";
+    char extra[160] = "";
     // Only mention the optional layers once they actually have data, so the panel stays
     // uncluttered for users who never enable them.
     if (ships) snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "\nVessels    %d", ships);
+    // Same rule as vessels: a row only appears once it has something to say, so a board
+    // with no card and no receiver does not show a column of blanks.
+    if (s_feedSrc >= 0)
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra),
+                 "\nFeed       %s", s_feedSrc ? "Receiver" : "Internet");
+    const uint32_t recs = sd_seen_records();
+    if (recs)
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra),
+                 "\nLogged     %u airframes", (unsigned)recs);
+    const uint32_t pics = sd_photo_count();
+    if (pics)
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra),
+                 "\nPhotos     %u cached", (unsigned)pics);
 
     const int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
     const char *q = (rssi > -60) ? "EXCELLENT" : ((rssi > -75) ? "GOOD" : ((rssi != 0) ? "WEAK" : "OFFLINE"));
 
-    char st[350];
+    char st[512];
     snprintf(st, sizeof(st),
              "Aircraft   %d\n"
              "Emergency  %d\n"
              "Nearest    %s (%.1f %s)\n"
              "Highest    %s\n"
              "Range      %.0f %s%s\n"
-             "WiFi RSSI  %d dBm (%s)",
+             "WiFi RSSI  %d dBm (%s)\n"
+             "Uptime     %luh %02lum",
              n, emg, n ? nearestCall : "-", dist_val(n ? nearest : 0.0f), dist_unit(),
              altH, dist_val(s_rangeKm), dist_unit(), extra,
-             rssi, q);
+             rssi, q,
+             (unsigned long)(millis() / 3600000UL), (unsigned long)((millis() / 60000UL) % 60UL));
     lv_label_set_text(s_statsLbl, st);
+
+    // The block grows and shrinks -- vessels, feed source, log counts and photos each
+    // appear only when they have something to say -- so the footer is chained under it
+    // rather than pinned. At a fixed offset the uptime row landed on "Configure at" as
+    // soon as the extra rows showed up.
+    lv_obj_update_layout(s_statsLbl);
+    lv_obj_align_to(s_statsGps, s_statsLbl, LV_ALIGN_OUT_BOTTOM_MID, 0, UI_S(4));
+    lv_obj_align_to(s_statsNet, s_statsGps, LV_ALIGN_OUT_BOTTOM_MID, 0, UI_S(6));
+    if (s_statsVer) lv_obj_align_to(s_statsVer, s_statsNet, LV_ALIGN_OUT_BOTTOM_MID, 0, UI_S(6));
 }
 
 // Radar loop playback. The frames are already decoded in PSRAM, so a step is a canvas
@@ -1284,6 +1352,17 @@ static void build_about(void) {
     lv_label_set_text(s_aboutBody, body);
 }
 
+// The same settings are reachable from a browser, and the pills are styled once when
+// they are built -- so a change made on the config page would leave the device showing
+// the old state until a reboot. Restyle them whenever this screen comes up.
+static void refresh_settings(void) {
+    for (int i = 0; i < s_togBtnN; ++i) {
+        lv_obj_t *b = s_togBtn[i];
+        if (!b) continue;
+        tog_style(b, tog_get(i));
+    }
+}
+
 // Rebuild whichever of list/stats is currently on screen (called on poll and on swipe).
 static void refresh_active_tile(void) {
     if (!s_tv) return;
@@ -1294,6 +1373,7 @@ static void refresh_active_tile(void) {
     else if (act == s_tileClock) build_clock_weather();
     else if (act == s_tileTracked) build_tracked();
     else if (act == s_tileAbout) build_about();
+    else if (act == s_tileSettings) refresh_settings();
 }
 
 void ui_on_data_updated(void) {
@@ -1466,7 +1546,7 @@ void ui_theme_changed(void) {
 }
 
 void ui_show_view(int idx) {
-    if (s_tv && idx >= 0 && idx <= 6) lv_obj_set_tile_id(s_tv, (uint32_t)idx, 0, LV_ANIM_OFF);
+    if (s_tv && idx >= 0 && idx <= 7) lv_obj_set_tile_id(s_tv, (uint32_t)idx, 0, LV_ANIM_OFF);
 }
 
 // ------------------------------------------------------------------- splash
@@ -1813,7 +1893,11 @@ void ui_create(void) {
     s_tileWeather = lv_tileview_add_tile(s_tv, 3, 0, LV_DIR_HOR);
     s_tileTracked = lv_tileview_add_tile(s_tv, 4, 0, LV_DIR_HOR);
     s_tileClock = lv_tileview_add_tile(s_tv, 5, 0, LV_DIR_HOR);
-    s_tileAbout = lv_tileview_add_tile(s_tv, 6, 0, LV_DIR_LEFT);
+    s_tileAbout = lv_tileview_add_tile(s_tv, 6, 0, LV_DIR_HOR);
+    // Settings last rather than wedged next to stats: inserting in the middle would
+    // renumber every view behind it, and /view indices are baked into the capture tool
+    // and the docs.
+    s_tileSettings = lv_tileview_add_tile(s_tv, 7, 0, LV_DIR_LEFT);
     // Rebuild the list/stats with the latest data the moment they slide into view
     // (between polls they'd otherwise show whatever was there when last visible).
     lv_obj_add_event_cb(s_tv, [](lv_event_t *) { refresh_active_tile(); }, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -1934,87 +2018,22 @@ void ui_create(void) {
 
     // --- stats & settings tile (circular panel) ---
     lv_obj_t *sp = make_round_panel(s_tileStats);
-    make_tile_title(sp, "SETTINGS & STATS");
-
-    // Interactive HUD feature toggles. The grid sits between the title and the stats
-    // text; rows are 37 apart and the lowest has to stay clear of s_statsLbl, which is
-    // centred at +42 and six lines tall, so it starts around -6. At the old -1 the bottom
-    // row printed straight over the "Aircraft N" line.
-    auto make_hud_toggle = [&](const char *labelOn, const char *labelOff, bool state, lv_event_cb_t cb, lv_coord_t dx, lv_coord_t dy) {
-        lv_obj_t *btn = lv_btn_create(sp);
-        lv_obj_set_size(btn, UI_S(120), UI_S(30));
-        lv_obj_align(btn, LV_ALIGN_CENTER, dx, dy);
-        lv_obj_set_style_radius(btn, 15, 0);
-        lv_obj_set_style_bg_color(btn, UI_PANEL, 0);
-        lv_obj_set_style_border_color(btn, state ? UI_CYAN : UI_DIM, 0);
-        lv_obj_set_style_border_width(btn, 1, 0);
-        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLL_CHAIN);
-        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_obj_set_style_text_font(lbl, F12(), 0);
-        lv_obj_set_style_text_color(lbl, state ? UI_CYAN : UI_DIM, 0);
-        lv_label_set_text(lbl, state ? labelOn : labelOff);
-        lv_obj_center(lbl);
-        return btn;
-    };
-
-    make_hud_toggle("VECTORS ON", "VECTORS OFF", radar::vectorLinesEnabled(), [](lv_event_t *e) {
-        bool on = !radar::vectorLinesEnabled();
-        radar::setVectorLinesEnabled(on);
-        lv_obj_t *b = lv_event_get_target(e); lv_obj_t *l = lv_obj_get_child(b, 0);
-        if (l) lv_label_set_text(l, on ? "VECTORS ON" : "VECTORS OFF");
-        lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
-        if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
-    }, UI_S(-66), UI_S(-112));
-
-    make_hud_toggle("TICKS ON", "TICKS OFF", radar::vectorTicksEnabled(), [](lv_event_t *e) {
-        bool on = !radar::vectorTicksEnabled();
-        radar::setVectorTicksEnabled(on);
-        lv_obj_t *b = lv_event_get_target(e); lv_obj_t *l = lv_obj_get_child(b, 0);
-        if (l) lv_label_set_text(l, on ? "TICKS ON" : "TICKS OFF");
-        lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
-        if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
-    }, UI_S(66), UI_S(-112));
-
-    make_hud_toggle("GLOW ON", "GLOW OFF", radar::altGlowEnabled(), [](lv_event_t *e) {
-        bool on = !radar::altGlowEnabled();
-        radar::setAltGlowEnabled(on);
-        lv_obj_t *b = lv_event_get_target(e); lv_obj_t *l = lv_obj_get_child(b, 0);
-        if (l) lv_label_set_text(l, on ? "GLOW ON" : "GLOW OFF");
-        lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
-        if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
-    }, UI_S(-66), UI_S(-75));
-
-    make_hud_toggle("DIST/BRG ON", "DIST/BRG OFF", radar::distBrgLabelEnabled(), [](lv_event_t *e) {
-        bool on = !radar::distBrgLabelEnabled();
-        radar::setDistBrgLabelEnabled(on);
-        lv_obj_t *b = lv_event_get_target(e); lv_obj_t *l = lv_obj_get_child(b, 0);
-        if (l) lv_label_set_text(l, on ? "DIST/BRG ON" : "DIST/BRG OFF");
-        lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
-        if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
-    }, UI_S(66), UI_S(-75));
-
-    make_hud_toggle("FL/SPD ON", "FL/SPD OFF", radar::speedAltFormatEnabled(), [](lv_event_t *e) {
-        bool on = !radar::speedAltFormatEnabled();
-        radar::setSpeedAltFormatEnabled(on);
-        lv_obj_t *b = lv_event_get_target(e); lv_obj_t *l = lv_obj_get_child(b, 0);
-        if (l) lv_label_set_text(l, on ? "FL/SPD ON" : "FL/SPD OFF");
-        lv_obj_set_style_border_color(b, on ? UI_CYAN : UI_DIM, 0);
-        if (l) lv_obj_set_style_text_color(l, on ? UI_CYAN : UI_DIM, 0);
-    }, UI_S(-66), UI_S(-38));
+    make_tile_title(sp, "STATS");
 
     s_statsLbl = lv_label_create(sp);
     lv_obj_set_style_text_font(s_statsLbl, F14(), 0);
     lv_obj_set_style_text_color(s_statsLbl, UI_SOFT, 0);
     lv_label_set_text(s_statsLbl, "Aircraft   0");
-    lv_obj_align(s_statsLbl, LV_ALIGN_CENTER, UI_S(0), UI_S(42));
+    // Lifted 70 up from where it sat under the old toggle grid: with the toggles gone
+    // the block was hugging the bottom of the panel with a large hole above it.
+    lv_obj_align(s_statsLbl, LV_ALIGN_CENTER, UI_S(0), UI_S(-28));
 
     s_statsGps = lv_label_create(sp);               // GPS status line (hidden unless GPS is on)
     lv_obj_set_style_text_font(s_statsGps, F14(), 0);
     lv_obj_set_style_text_color(s_statsGps, UI_SOFT, 0);
     lv_obj_set_style_text_align(s_statsGps, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(s_statsGps, "");
-    lv_obj_align(s_statsGps, LV_ALIGN_CENTER, UI_S(0), UI_S(90));
+    lv_obj_align(s_statsGps, LV_ALIGN_CENTER, UI_S(0), UI_S(20));
 
     // footer: where to reach the configuration page (IP / hostname / setup AP)
     s_statsNet = lv_label_create(sp);
@@ -2023,13 +2042,90 @@ void ui_create(void) {
     lv_obj_set_style_text_color(s_statsNet, UI_GREEN, 0);
     lv_obj_set_style_text_align(s_statsNet, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(s_statsNet, "");
-    lv_obj_align(s_statsNet, LV_ALIGN_CENTER, UI_S(0), UI_S(132));
+    lv_obj_align(s_statsNet, LV_ALIGN_CENTER, UI_S(0), UI_S(62));
 
-    lv_obj_t *ver = lv_label_create(sp);            // firmware version (so users can tell what's flashed)
+    s_statsVer = lv_label_create(sp);               // firmware version (so users can tell what's flashed)
+    lv_obj_t *ver = s_statsVer;
     lv_obj_set_style_text_font(ver, F12(), 0);
     lv_obj_set_style_text_color(ver, UI_DIM, 0);
     lv_label_set_text(ver, "SkyGlass v" FW_VERSION);
-    lv_obj_align(ver, LV_ALIGN_CENTER, UI_S(0), UI_S(170));
+    lv_obj_align(ver, LV_ALIGN_CENTER, UI_S(0), UI_S(100));
+
+
+    // --- settings tile (every switchable option, on its own screen) ---
+    lv_obj_t *gp = make_round_panel(s_tileSettings);
+    make_tile_title(gp, "SETTINGS");
+
+    // Every boolean the firmware exposes, generated from the provider list rather than
+    // hand-placed. There are far more of them than fit on a round panel, so they live in
+    // a scrolling box between the title and the stats text.
+    //
+    // One shared style, not six local ones per button: local styles are allocated out of
+    // the same fixed LVGL pool the rest of the UI comes from, and on the S3 that pool has
+    // roughly 28 KB free once every screen has been built. Nineteen pills styled the old
+    // way is how you exhaust it, and running out is not graceful -- LVGL asserts.
+    static lv_style_t stPill;
+    static bool stPillInit = false;
+    if (!stPillInit) {
+        stPillInit = true;
+        lv_style_init(&stPill);
+        lv_style_set_radius(&stPill, 15);
+        lv_style_set_bg_color(&stPill, UI_PANEL);
+        lv_style_set_border_width(&stPill, 1);
+        lv_style_set_pad_all(&stPill, 0);
+    }
+
+    lv_obj_t *box = lv_obj_create(gp);
+    lv_obj_remove_style_all(box);
+    // Height is a whole number of rows (8 x 34 + 2 of top pad); a partial row at the
+    // bottom edge reads as a rendering fault rather than as a list that scrolls. The
+    // width still fits inside the round bezel at the top and bottom of that span.
+    lv_obj_set_size(box, UI_S(300), UI_S(274));
+    lv_obj_align(box, LV_ALIGN_CENTER, UI_S(0), UI_S(14));
+    lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+    lv_obj_set_scroll_dir(box, LV_DIR_VER);
+    // Always on, not AUTO: AUTO only appears once you are already scrolling, which is no
+    // use to someone who cannot tell there is anything below the fold in the first place.
+    lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_ON);
+    lv_obj_set_style_bg_color(box, UI_CYAN, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(box, LV_OPA_70, LV_PART_SCROLLBAR);
+    lv_obj_set_style_width(box, UI_S(5), LV_PART_SCROLLBAR);
+    lv_obj_set_style_radius(box, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_pad_right(box, UI_S(2), LV_PART_SCROLLBAR);
+    // Without this a flick that runs past the end of the list slides the tileview to the
+    // next screen instead of stopping, which makes the menu feel broken.
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLL_CHAIN);
+
+    s_togBtnN = tog_count();
+    if (s_togBtnN > (int)(sizeof(s_togBtn) / sizeof(s_togBtn[0])))
+        s_togBtnN = (int)(sizeof(s_togBtn) / sizeof(s_togBtn[0]));
+    for (int i = 0; i < s_togBtnN; ++i) {
+        const bool on = tog_get(i);
+        lv_obj_t *btn = lv_btn_create(box);
+        lv_obj_remove_style_all(btn);
+        lv_obj_add_style(btn, &stPill, 0);
+        lv_obj_set_size(btn, UI_S(138), UI_S(30));
+        lv_obj_set_pos(btn, (i & 1) ? UI_S(150) : UI_S(4), UI_S(2) + (i / 2) * UI_S(34));
+        // Deliberately NOT clearing LV_OBJ_FLAG_SCROLL_CHAIN here. The pills cover the
+        // full width of the list, so almost every drag starts on one; with the chain
+        // broken that drag cannot reach the scrolling parent, so the list never moves and
+        // the press lands as a click instead. Chained, LVGL scrolls the box and cancels
+        // the click as soon as the gesture passes the scroll threshold. The chain is cut
+        // on the box instead, which is what stops a flick running on into the tileview.
+        lv_obj_add_event_cb(btn, [](lv_event_t *e) {
+            const int idx = (int)(intptr_t)lv_event_get_user_data(e);
+            const bool on = !tog_get(idx);
+            tog_set(idx, on);
+            tog_style(lv_event_get_target(e), on);
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_font(lbl, F12(), 0);
+        lv_label_set_text(lbl, tog_label(i));
+        lv_obj_center(lbl);
+        tog_style(btn, on);          // after the label exists: it recolours the text too
+        s_togBtn[i] = btn;
+    }
 
     // --- weather tile (current conditions + next three days) ---
     lv_obj_t *wp = make_round_panel(s_tileWeather);

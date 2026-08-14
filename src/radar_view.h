@@ -125,6 +125,7 @@ enum RadarOpt {
 struct RadarOptInfo {
     const char *key;     // NVS key and web form id (keep <= 15 chars for NVS)
     const char *label;   // shown on the settings page
+    const char *shortLabel;  // shown on the device's own menu, where a pill is ~120px
     bool        dflt;
 };
 

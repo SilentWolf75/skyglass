@@ -28,6 +28,7 @@ VIEWS = [
     (4, None, "tracked",  "Tracked flight"),
     (5, None, "clock",    "Clock"),
     (6, None, "about",    "About"),
+    (7, None, "settings", "Settings"),
 ]
 
 # The detail card needs a contact selected and then a pause: tapping one kicks off four

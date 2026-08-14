@@ -152,14 +152,14 @@ static bool       s_milPreview      = false;
 // One row per switchable thing the scope draws. Order here is the order the settings
 // page lists them in, so keep it roughly top-to-bottom as they appear on a contact.
 static const radar::RadarOptInfo RADAR_OPTS[radar::ROPT_COUNT] = {
-    { "rl_call", "Callsign / flight ID",     true  },
-    { "rl_alt",  "Altitude",                 true  },
-    { "rl_vs",   "Climb / descent arrow",    true  },
-    { "rl_spd",  "Ground speed",             true  },
-    { "rl_db",   "Distance and bearing",     false },
-    { "rl_vec",  "Heading vector line",      true  },
-    { "rl_tick", "Vector minute ticks",      true  },
-    { "rl_glow", "Altitude glow halo",       true  },
+    { "rl_call", "Callsign / flight ID",  "CALLSIGN", true  },
+    { "rl_alt",  "Altitude",              "ALTITUDE", true  },
+    { "rl_vs",   "Climb / descent arrow", "VS ARROW", true  },
+    { "rl_spd",  "Ground speed",          "SPEED",    true  },
+    { "rl_db",   "Distance and bearing",  "DIST/BRG", false },
+    { "rl_vec",  "Heading vector line",   "VECTORS",  true  },
+    { "rl_tick", "Vector minute ticks",   "TICKS",    true  },
+    { "rl_glow", "Altitude glow halo",    "GLOW",     true  },
 };
 // Deliberately not a second list of defaults -- those live in RADAR_OPTS above and are
 // copied across on first use. Two hand-maintained lists is how the theme dropdown ended

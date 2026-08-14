@@ -1,7 +1,7 @@
 #pragma once
 // SkyGlass — build & user configuration.
 
-#define FW_VERSION "1.18.3"   // shown on the web config page + Stats screen; bump on release
+#define FW_VERSION "1.19.0"   // shown on the web config page + Stats screen; bump on release
 // ---------- Board selection ----------
 // Everything hardware-specific (screen geometry, pin map, which peripherals exist)
 // lives in src/boards/<board>.h. Pick one with a -D flag in platformio.ini; the
@@ -63,7 +63,7 @@ static const float RANGE_STEPS_KM[] = {1.60934f, 4.82803f, 10.0f, 20.0f, 30.0f, 
 // Measured on hardware at ~437 bytes per row, so the cap is worth ~10.5 KB of pool. At
 // the couple of dozen contacts a local receiver typically shows it changes nothing; what
 // it protects against is ADSB_MAX_AIRCRAFT in busy airspace, where 120 rows would want
-// ~52 KB and the S3 only has ~23 KB of pool free once every screen has been visited.
+// ~52 KB and the S3 only has ~21 KB of pool free once every screen has been visited.
 #define UI_LIST_MAX_ROWS    24
 
 #define ADSB_MAX_AIRCRAFT   120             // hard cap parsed per poll (protect RAM in busy areas)

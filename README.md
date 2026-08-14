@@ -35,17 +35,17 @@ Every image on this page is the **real framebuffer from my device**, pulled over
 | Tracked flight | Stats | Clock |
 |:---:|:---:|:---:|
 | <img src="docs/img/screens/tracked.png" width="240"> | <img src="docs/img/screens/stats.png" width="240"> | <img src="docs/img/screens/clock.png" width="240"> |
-| Follow one flight: progress along the great circle, distance to run and ETA | Traffic summary and how to reach the config page | Watch face with a seconds arc and current conditions |
+| Follow one flight: progress along the great circle, distance to run and ETA | Traffic summary, which feed is live, flight-log totals, uptime, and how to reach the config page | Watch face with a seconds arc and current conditions |
 
 | Precipitation | Satellite | Forecast |
 |:---:|:---:|:---:|
 | <img src="docs/img/screens/wx-radar.png" width="240"> | <img src="docs/img/screens/wx-cloud.png" width="240"> | <img src="docs/img/screens/forecast.png" width="240"> |
 | RainViewer echoes with aviation-style overlays | EUMETSAT cloud-type imagery | Three days with vector weather icons |
 
-| Boot splash | About |
-|:---:|:---:|
-| <img src="docs/img/splash.png" width="240"> | <img src="docs/img/screens/about.png" width="240"> |
-| Painted per-pixel into a PSRAM canvas: gradient sky, stars, lit clouds, a live-looking scope and a banking airliner | The last screen: build date, board, chip, hostname, IP, uptime, feed and where the source lives |
+| Settings | Boot splash | About |
+|:---:|:---:|:---:|
+| <img src="docs/img/screens/settings.png" width="240"> | <img src="docs/img/splash.png" width="240"> | <img src="docs/img/screens/about.png" width="240"> |
+| Every switchable option on the glass, no browser needed &mdash; the same settings the config page writes, to the same NVS keys | Gradient sky, lit clouds, a live-looking scope and a banking airliner | Build date, board, chip, hostname, IP, uptime, feed and where the source lives |
 
 ### Themes
 
