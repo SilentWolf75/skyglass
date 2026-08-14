@@ -40,7 +40,10 @@
 #define WX_RADAR_SIZE       720   // full bleed: the panel width
 #define WX_RADAR_SOURCE_SIZE 768  // fetched a little larger, then centre-cropped
 // The full two-hour RainViewer history: 13 frames x 450 KB = 5.9 MB of 25 MB free.
-#define WX_RADAR_FRAMES     13
+// Eight, not thirteen: at 720x720 each frame is a megabyte of PSRAM, and thirteen took
+// free PSRAM from ~21 MB to ~12. Eight still spans eighty minutes at RainViewer's
+// ten-minute cadence, which is plenty to see which way a line of storms is moving.
+#define WX_RADAR_FRAMES     8
 #define LCD_COL_OFFSET      0
 #define LCD_ROW_OFFSET      0
 

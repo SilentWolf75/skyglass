@@ -1028,9 +1028,18 @@ static void build_weather(void) {
     lv_label_set_text(s_weatherModeLbl,
         s_weatherMode == WEATHER_RADAR ? "CLOUDS" :
         s_weatherMode == WEATHER_CLOUDS ? "3-DAY FORECAST" : "WX RADAR");
-    if (s_weatherTitle) lv_label_set_text(s_weatherTitle,
-        s_weatherMode == WEATHER_RADAR ? "WX RADAR" :
-        s_weatherMode == WEATHER_CLOUDS ? "SAT CLOUDS" : "WEATHER");
+    if (s_weatherTitle) {
+        lv_label_set_text(s_weatherTitle,
+            s_weatherMode == WEATHER_RADAR ? "WX RADAR" :
+            s_weatherMode == WEATHER_CLOUDS ? "SAT CLOUDS" : "WEATHER");
+        // The imagery modes run to the bezel now, and a bright title sitting on top of
+        // the picture reads as a header bar with the radar starting halfway down. The
+        // one dim line below carries the product, the centre and the range; the mode
+        // button at the bottom already says which product you are looking at. Forecast
+        // is a text screen, so it keeps its title.
+        if (forecastMode) lv_obj_clear_flag(s_weatherTitle, LV_OBJ_FLAG_HIDDEN);
+        else              lv_obj_add_flag(s_weatherTitle, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 // A loop step is only ever a different picture and a different timestamp. Calling the
@@ -2186,8 +2195,19 @@ void ui_create(void) {
     lv_obj_set_style_text_font(s_wxAirport, F14(), 0);
     lv_obj_set_style_text_color(s_wxAirport, UI_SOFT, 0);
     lv_label_set_text(s_wxAirport, "RADAR CENTRE");
-    // A header line, not part of the image: it belongs under the title.
-    lv_obj_align(s_wxAirport, LV_ALIGN_TOP_MID, 0, UI_S(46));
+    // Takes the title's place rather than sitting under it: with the imagery full-bleed
+    // there is no header band to belong to, so this is the only chrome up here.
+    lv_obj_set_style_text_font(s_wxAirport, F12(), 0);
+    lv_obj_set_style_text_color(s_wxAirport, UI_SOFT, 0);
+    // Just enough plate to stay readable: dim text on top of a bright green cell is not
+    // readable at all, and this line now sits directly on the imagery. Sized to the text
+    // rather than spanning the screen, so it reads as a caption and not as a header band.
+    lv_obj_set_style_bg_color(s_wxAirport, UI_PANEL, 0);
+    lv_obj_set_style_bg_opa(s_wxAirport, 190, 0);
+    lv_obj_set_style_radius(s_wxAirport, 8, 0);
+    lv_obj_set_style_pad_hor(s_wxAirport, UI_S(8), 0);
+    lv_obj_set_style_pad_ver(s_wxAirport, UI_S(3), 0);
+    lv_obj_align(s_wxAirport, LV_ALIGN_TOP_MID, 0, UI_S(28));
 
     s_wxLoopTimer = lv_timer_create(wx_loop_tick_cb, WX_LOOP_STEP_MS, nullptr);
 
@@ -2245,7 +2265,12 @@ void ui_create(void) {
     // a plate here is what used to cut the range rings apart.
     s_wxAttrib = lv_label_create(wp);
     lv_obj_set_style_text_font(s_wxAttrib, F12(), 0);
-    lv_obj_set_style_text_color(s_wxAttrib, UI_DIM, 0);
+    lv_obj_set_style_text_color(s_wxAttrib, UI_SOFT, 0);
+    lv_obj_set_style_bg_color(s_wxAttrib, UI_PANEL, 0);      // same reason as the line above
+    lv_obj_set_style_bg_opa(s_wxAttrib, 190, 0);
+    lv_obj_set_style_radius(s_wxAttrib, 8, 0);
+    lv_obj_set_style_pad_hor(s_wxAttrib, UI_S(8), 0);
+    lv_obj_set_style_pad_ver(s_wxAttrib, UI_S(3), 0);
     lv_label_set_text(s_wxAttrib, "WAITING FOR RADAR DATA");
     {
         const int lineH  = UI_S(22);                          // the label's box, not its font
