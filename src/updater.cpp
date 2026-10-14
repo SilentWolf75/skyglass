@@ -140,7 +140,7 @@ static void do_check(void) {
     http.setTimeout(8000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     if (!http.begin(cli, UPDATE_MANIFEST_URL)) { set_status("could not reach the update server"); cli.stop(); return; }
-    http.addHeader("User-Agent", ADSB_USER_AGENT);
+    http.setUserAgent(ADSB_USER_AGENT);
     const int code = http.GET();
     if (code != 200) {
         http.end();
@@ -197,7 +197,7 @@ static void do_install(void) {
     http.setTimeout(15000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     if (!http.begin(cli, UPDATE_FIRMWARE_URL)) { set_status("download failed to start"); cli.stop(); return; }
-    http.addHeader("User-Agent", ADSB_USER_AGENT);
+    http.setUserAgent(ADSB_USER_AGENT);
     const int code = http.GET();
     if (code != 200) { http.end(); cli.stop(); set_status("download failed"); return; }
 

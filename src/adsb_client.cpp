@@ -150,7 +150,7 @@ bool AdsbClient::fetchFrom(const char* host, std::vector<Aircraft>& out, bool lo
         if (local) _plain.stop(); else _client.stop();
         return false;
     }
-    _http.addHeader("User-Agent", ADSB_USER_AGENT);
+    _http.setUserAgent(ADSB_USER_AGENT);
     _http.addHeader("Accept", "application/json");
 
     const int code = _http.GET();

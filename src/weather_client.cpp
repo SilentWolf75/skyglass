@@ -94,7 +94,7 @@ bool weather_fetch(double lat, double lon, WeatherSnapshot &out) {
         client.stop();
         return false;
     }
-    http.addHeader("User-Agent", ADSB_USER_AGENT);
+    http.setUserAgent(ADSB_USER_AGENT);
 
     const int status = http.GET();
     if (status != 200) {
