@@ -14,7 +14,7 @@
 #include <esp_heap_caps.h>
 #include "sd_store.h"
 
-#define PS_UA "SkyGlass/1.0 (+https://github.com/SilentWolf75/skyglass)"
+#define PS_UA ADSB_USER_AGENT
 
 // JPEG decode target (set just before drawJpg)
 static lv_color_t *s_dst = nullptr;

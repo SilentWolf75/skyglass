@@ -206,7 +206,7 @@ bool route_fetch(const char *callsign, char *from, size_t fn, char *to, size_t t
     http.setConnectTimeout(3000);   // short: runs on the feed task, don't stall the live poll
     http.setTimeout(6000);
     if (!http.begin(client, url)) { client.stop(); return false; }
-    http.addHeader("User-Agent", ADSB_USER_AGENT);
+    http.setUserAgent(ADSB_USER_AGENT);
 
     const int code = http.GET();
     if (code != 200) { http.end(); client.stop(); return false; }
@@ -271,7 +271,7 @@ bool reg_fetch(const char *hex, char *reg, size_t rn, char *type, size_t tn) {
     http.setConnectTimeout(3000);      // shares the feed task; keep it short
     http.setTimeout(6000);
     if (!http.begin(client, url)) { client.stop(); return false; }
-    http.addHeader("User-Agent", ADSB_USER_AGENT);
+    http.setUserAgent(ADSB_USER_AGENT);
 
     const int code = http.GET();
     if (code != 200) { http.end(); client.stop(); return false; }

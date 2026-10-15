@@ -200,7 +200,7 @@ static bool https_get_json(const char *url, JsonDocument &doc, int timeoutMs) {
     http.setConnectTimeout(3500);
     http.setTimeout(timeoutMs);
     if (!http.begin(client, url)) { client.stop(); return false; }
-    http.addHeader("User-Agent", ADSB_USER_AGENT);
+    http.setUserAgent(ADSB_USER_AGENT);
     const int status = http.GET();
     if (status != 200) {
         char tls[128] = "";
