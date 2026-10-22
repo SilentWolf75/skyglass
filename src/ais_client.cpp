@@ -65,10 +65,13 @@ static void send_subscription(void) {
              "{\"APIKey\":\"%s\",\"BoundingBoxes\":[[[%.4f,%.4f],[%.4f,%.4f]]],"
              "\"FilterMessageTypes\":[\"PositionReport\",\"ShipStaticData\"]}",
              s_key, s_lat - dLat, s_lon - dLon, s_lat + dLat, s_lon + dLon);
-    s_ws.sendTXT(msg);
     s_needSub = false;
-    AIS_LOG("[ais] subscribed: box +/-%d km around home, key %u chars\n",
-            (int)s_rangeKm, (unsigned)strlen(s_key));
+    const bool sent = s_ws.sendTXT(msg);
+    if (sent)
+        AIS_LOG("[ais] subscribed: box +/-%d km around home, key %u chars\n",
+                (int)s_rangeKm, (unsigned)strlen(s_key));
+    else
+        AIS_LOG("[ais] subscription NOT sent (socket closed while sending)\n");
 }
 
 static void handle_message(const uint8_t *payload, size_t len) {
@@ -120,13 +123,25 @@ static void handle_message(const uint8_t *payload, size_t len) {
     ++s_used;
 }
 
+// Library payloads are not NUL-terminated; copy into something printable.
+static const char *payload_text(const uint8_t *payload, size_t len, char *buf, size_t cap) {
+    if (!payload || !len) return "no reason given";
+    const size_t n = len < cap - 1 ? len : cap - 1;
+    memcpy(buf, payload, n); buf[n] = 0;
+    return buf;
+}
+
 static void ws_event(WStype_t type, uint8_t *payload, size_t len) {
+    char why[96];
     switch (type) {
         case WStype_CONNECTED:
             s_connected = true;
             s_msgs = s_used = 0;
             AIS_LOG("[ais] connected to %s\n", AIS_HOST);
-            send_subscription();
+            // Subscribe from ais_loop(), not from inside the library's callback: sending
+            // while the library is still finishing the handshake is fragile, and aisstream
+            // allows 3 s for the subscription, so the next pump is soon enough.
+            s_needSub = true;
             break;
         case WStype_DISCONNECTED:
             // Log every drop, including connection attempts that never got through (TLS
@@ -134,8 +149,9 @@ static void ws_event(WStype_t type, uint8_t *payload, size_t len) {
             // every 15 s on its own.
             if (s_connected || millis() - s_lastDiscLog > 14000UL) {
                 s_lastDiscLog = millis();
-                AIS_LOG("[ais] %s; retrying in 15 s\n",
-                        s_connected ? "disconnected" : "could not connect (TLS/DNS/network)");
+                AIS_LOG("[ais] %s (%s); retrying in 15 s\n",
+                        s_connected ? "disconnected" : "could not connect",
+                        payload_text(payload, len, why, sizeof(why)));
             }
             s_connected = false;
             break;
@@ -143,7 +159,7 @@ static void ws_event(WStype_t type, uint8_t *payload, size_t len) {
             handle_message(payload, len);
             break;
         case WStype_ERROR:
-            AIS_LOG("[ais] socket error\n");
+            AIS_LOG("[ais] socket error (%s)\n", payload_text(payload, len, why, sizeof(why)));
             break;
         default:
             break;
@@ -191,7 +207,7 @@ void ais_loop(void) {
         AIS_LOG("[ais] connecting to %s (key %u chars)\n", AIS_HOST, (unsigned)strlen(s_key));
     }
     s_ws.loop();
-    if (s_needSub && s_connected) send_subscription();
+    if (s_needSub && s_connected) send_subscription();   // after connect, or on a move/zoom
 
     const uint32_t now = millis();
     if (now - s_lastStatus > 30000UL) {   // heartbeat: is anything arriving at all?
