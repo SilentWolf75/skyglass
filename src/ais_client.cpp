@@ -28,7 +28,9 @@
 #endif
 
 // Diagnostics: how much the stream is actually delivering.
-static uint32_t s_msgs = 0;         // text frames received since connecting
+static uint32_t s_msgs = 0;         // JSON frames (text or binary) received since connecting
+static uint32_t s_frag = 0;         // fragmented frames (not reassembled; counted to spot them)
+static uint32_t s_other = 0;        // pings/pongs and anything else
 static uint32_t s_used = 0;         // ...of which carried a usable position
 static uint32_t s_lastStatus = 0;
 static uint32_t s_lastDiscLog = 0;
@@ -136,7 +138,7 @@ static void ws_event(WStype_t type, uint8_t *payload, size_t len) {
     switch (type) {
         case WStype_CONNECTED:
             s_connected = true;
-            s_msgs = s_used = 0;
+            s_msgs = s_used = s_frag = s_other = 0;
             AIS_LOG("[ais] connected to %s\n", AIS_HOST);
             // Subscribe from ais_loop(), not from inside the library's callback: sending
             // while the library is still finishing the handshake is fragile, and aisstream
@@ -156,12 +158,22 @@ static void ws_event(WStype_t type, uint8_t *payload, size_t len) {
             s_connected = false;
             break;
         case WStype_TEXT:
+        case WStype_BIN:
+            // aisstream sends its JSON in BINARY frames. Only TEXT was handled, so every
+            // message was dropped uncounted -- connected and subscribed, yet "0 messages".
             handle_message(payload, len);
+            break;
+        case WStype_FRAGMENT_TEXT_START:
+        case WStype_FRAGMENT_BIN_START:
+        case WStype_FRAGMENT:
+        case WStype_FRAGMENT_FIN:
+            ++s_frag;
             break;
         case WStype_ERROR:
             AIS_LOG("[ais] socket error (%s)\n", payload_text(payload, len, why, sizeof(why)));
             break;
         default:
+            ++s_other;
             break;
     }
 }
@@ -212,9 +224,11 @@ void ais_loop(void) {
     const uint32_t now = millis();
     if (now - s_lastStatus > 30000UL) {   // heartbeat: is anything arriving at all?
         s_lastStatus = now;
-        AIS_LOG("[ais] %s, %u messages (%u with a position), %d ships tracked\n",
+        AIS_LOG("[ais] %s, %u messages (%u with a position), %d ships tracked"
+                " [fragments %u, other %u]\n",
                 s_connected ? "connected" : "NOT connected",
-                (unsigned)s_msgs, (unsigned)s_used, vessel_count());
+                (unsigned)s_msgs, (unsigned)s_used, vessel_count(),
+                (unsigned)s_frag, (unsigned)s_other);
     }
     if (now - s_lastExpire > 60000UL) {   // prune stale contacts once a minute
         s_lastExpire = now;
