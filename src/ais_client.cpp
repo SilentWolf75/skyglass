@@ -17,6 +17,22 @@
 #include <math.h>
 #include <string.h>
 
+// On the P4 the Serial log never reaches the USB port; mirror [ais] lines through the ROM
+// printf (same as ADSB_LOG). The ROM printf has no float formatting -- keep these to
+// %d / %u / %s.
+#if defined(BOARD_WAVESHARE_P4_LCD_4C)
+#  include <esp_rom_sys.h>
+#  define AIS_LOG(...) do { Serial.printf(__VA_ARGS__); esp_rom_printf(__VA_ARGS__); } while (0)
+#else
+#  define AIS_LOG(...) Serial.printf(__VA_ARGS__)
+#endif
+
+// Diagnostics: how much the stream is actually delivering.
+static uint32_t s_msgs = 0;         // text frames received since connecting
+static uint32_t s_used = 0;         // ...of which carried a usable position
+static uint32_t s_lastStatus = 0;
+static uint32_t s_lastDiscLog = 0;
+
 #define AIS_HOST "stream.aisstream.io"
 #define AIS_PORT 443
 #define AIS_PATH "/v0/stream"
@@ -51,10 +67,22 @@ static void send_subscription(void) {
              s_key, s_lat - dLat, s_lon - dLon, s_lat + dLat, s_lon + dLon);
     s_ws.sendTXT(msg);
     s_needSub = false;
-    Serial.printf("[ais] subscribed to box +/-%.0f km\n", (double)s_rangeKm);
+    AIS_LOG("[ais] subscribed: box +/-%d km around home, key %u chars\n",
+            (int)s_rangeKm, (unsigned)strlen(s_key));
 }
 
 static void handle_message(const uint8_t *payload, size_t len) {
+    ++s_msgs;
+    // aisstream answers a bad key or a malformed subscription with {"error": "..."} and
+    // then closes the socket. That used to be dropped silently -- say what it was.
+    if (len > 0 && len < 400 && memmem(payload, len, "\"error\"", 7)) {
+        char txt[160];
+        const size_t n = len < sizeof(txt) - 1 ? len : sizeof(txt) - 1;
+        memcpy(txt, payload, n); txt[n] = 0;
+        AIS_LOG("[ais] server says: %s\n", txt);
+        return;
+    }
+
     JsonDocument filter(&s_alloc);
     filter["MessageType"] = true;
     filter["MetaData"]["MMSI"] = true;
@@ -89,24 +117,33 @@ static void handle_message(const uint8_t *payload, size_t len) {
     }
     v.updatedMs = millis();
     vessel_upsert(v);
+    ++s_used;
 }
 
 static void ws_event(WStype_t type, uint8_t *payload, size_t len) {
     switch (type) {
         case WStype_CONNECTED:
             s_connected = true;
-            Serial.println("[ais] connected");
+            s_msgs = s_used = 0;
+            AIS_LOG("[ais] connected to %s\n", AIS_HOST);
             send_subscription();
             break;
         case WStype_DISCONNECTED:
-            if (s_connected) Serial.println("[ais] disconnected");
+            // Log every drop, including connection attempts that never got through (TLS
+            // or DNS failures used to be completely silent). Throttled: the library retries
+            // every 15 s on its own.
+            if (s_connected || millis() - s_lastDiscLog > 14000UL) {
+                s_lastDiscLog = millis();
+                AIS_LOG("[ais] %s; retrying in 15 s\n",
+                        s_connected ? "disconnected" : "could not connect (TLS/DNS/network)");
+            }
             s_connected = false;
             break;
         case WStype_TEXT:
             handle_message(payload, len);
             break;
         case WStype_ERROR:
-            Serial.println("[ais] socket error");
+            AIS_LOG("[ais] socket error\n");
             break;
         default:
             break;
@@ -151,12 +188,18 @@ void ais_loop(void) {
         s_ws.onEvent(ws_event);
         s_ws.setReconnectInterval(15000);
         s_started = true;
-        Serial.println("[ais] connecting to aisstream.io");
+        AIS_LOG("[ais] connecting to %s (key %u chars)\n", AIS_HOST, (unsigned)strlen(s_key));
     }
     s_ws.loop();
     if (s_needSub && s_connected) send_subscription();
 
     const uint32_t now = millis();
+    if (now - s_lastStatus > 30000UL) {   // heartbeat: is anything arriving at all?
+        s_lastStatus = now;
+        AIS_LOG("[ais] %s, %u messages (%u with a position), %d ships tracked\n",
+                s_connected ? "connected" : "NOT connected",
+                (unsigned)s_msgs, (unsigned)s_used, vessel_count());
+    }
     if (now - s_lastExpire > 60000UL) {   // prune stale contacts once a minute
         s_lastExpire = now;
         vessel_expire(now);
