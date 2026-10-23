@@ -156,7 +156,15 @@ void vessel_draw(lv_draw_ctx_t *ctx, lv_opa_t opa) {
             pts[i].x = (lv_coord_t)(m.pos.x + (lv_coord_t)lroundf(VX[i] * c - VY[i] * s));
             pts[i].y = (lv_coord_t)(m.pos.y + (lv_coord_t)lroundf(VX[i] * s + VY[i] * c));
         }
-        lv_draw_polygon(ctx, &hull, pts, 4);
+        // The hull is a concave chevron (the notch at pts[2] sits above both rear corners),
+        // and LVGL 8's lv_draw_polygon only supports CONVEX polygons -- on a concave one its
+        // edge walk never finishes, which froze the UI task until the watchdog rebooted the
+        // board as soon as the first ships arrived. Draw it as two triangles instead (always
+        // convex): tip-right-notch and tip-notch-left. Same outline, no hang.
+        const lv_point_t right[3] = { pts[0], pts[1], pts[2] };
+        const lv_point_t left[3]  = { pts[0], pts[2], pts[3] };
+        lv_draw_polygon(ctx, &hull, right, 3);
+        lv_draw_polygon(ctx, &hull, left, 3);
 
         if (m.name[0]) {
             lv_area_t la = { (lv_coord_t)(m.pos.x + 9), (lv_coord_t)(m.pos.y - 6),

@@ -167,6 +167,32 @@ static const int TZOPTS_N = sizeof(TZOPTS) / sizeof(TZOPTS[0]);
 
 static float queryRadiusKm();   // defined below; the feed task needs it for the fire bbox
 
+// ---- AIS task (core 0): pumps the aisstream.io WebSocket on its own ----
+// It used to be pumped from adsb_task between the HTTPS fetches, but on the P4 each of
+// those (aircraft, weather, radar, map tiles) can block for several seconds. The
+// WebSockets library gives the server's handshake reply 5 s and checks that limit before
+// reading, and aisstream closes any socket that has not subscribed within 3 s -- so the
+// socket either timed out ("Header response timeout") or was already closed by the time
+// it was read ("connected" then "Connection lost"). A dedicated task pumps it every 20 ms.
+// Created only once a key exists, so boards without AIS spend no stack on it.
+static TaskHandle_t s_aisTask = nullptr;
+static void ais_task(void*) {
+    for (;;) {
+        if (ais_has_key()) {
+            ais_configure(g_settings.homeLat, g_settings.homeLon, queryRadiusKm());
+            ais_loop();
+            vTaskDelay(pdMS_TO_TICKS(20));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+    }
+}
+static void ensure_ais_task() {
+    if (s_aisTask || !ais_has_key()) return;
+    // TLS handshake needs a big stack, as for adsb_task. Same core and priority.
+    xTaskCreatePinnedToCore(ais_task, "ais", 12288, nullptr, 1, &s_aisTask, 0);
+}
+
 // --- setup portal fallback (boards without WiFiManager) ----------------------------
 // The S3 gets this free: WiFiManager's autoConnect() opens a captive portal whenever it
 // cannot reach the stored network. The P4 has no WiFiManager, and it only raised its
@@ -392,12 +418,7 @@ static void adsb_task(void*) {
                     Serial.println("[clouds] fetch failed; retrying in 60s");
                 }
             }
-            // AIS: non-blocking socket pump; also keeps the subscription box in sync
-            // with the scope as the range or home position changes.
-            if (ais_has_key()) {
-                ais_configure(g_settings.homeLat, g_settings.homeLon, queryRadiusKm());
-                ais_loop();
-            }
+            // AIS runs in its own task (ais_task) -- see there for why.
             // Map background: one tile per iteration, so a 9-16 tile build never blocks
             // the live feed. Returns true while more work remains.
             if (map_client_enabled()) {
@@ -1508,6 +1529,7 @@ static void handleAis() {   // traffic mode (aircraft vs marine) + aisstream.io 
         g_aisKey = g_web.arg("key");
         g_aisKey.trim();
         ais_set_key(g_aisKey.c_str());     // empty key disconnects and clears the contacts
+        ensure_ais_task();                 // first key entered since boot
     }
     if (g_web.hasArg("save")) {
         Preferences p;
@@ -2099,6 +2121,7 @@ void setup() {
     if (g_mapBg) map_bg_begin();
     g_ac_mutex = xSemaphoreCreateMutex();
     xTaskCreatePinnedToCore(adsb_task, "adsb", 16384, nullptr, 1, nullptr, 0);  // TLS needs a big stack
+    ensure_ais_task();                    // only if an aisstream key is saved
 
     // configuration web page (http://<board hostname>.local/)
     g_web.on("/", handleRoot);
